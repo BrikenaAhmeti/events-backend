@@ -1,0 +1,506 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  directUrl  = env("DIRECT_DATABASE_URL")
+  extensions = [vector]
+}
+
+enum PlatformRole {
+  SUPER_ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  DISABLED
+}
+
+enum MembershipRole {
+  CLIENT_ADMIN
+  CLIENT_STAFF
+}
+
+enum MembershipStatus {
+  INVITED
+  ACTIVE
+  DISABLED
+}
+
+enum ClientStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum EventStatus {
+  DRAFT
+  READY
+  PUBLISHED
+  CANCELLED
+  ARCHIVED
+}
+
+enum SourceType {
+  DOCUMENT
+  USER_INPUT
+  CONCIERGE_UPDATE
+  SYSTEM
+}
+
+enum ProcessingStatus {
+  PENDING
+  QUEUED
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+enum InvitationStatus {
+  PENDING
+  QUEUED
+  SENT
+  FAILED
+  REVOKED
+  ACCEPTED
+}
+
+enum InvitationType {
+  PERSONALIZED
+  GENERAL
+}
+
+enum ConversationType {
+  ORGANIZER
+  GUEST
+}
+
+enum MessageRole {
+  USER
+  CONCIERGE
+  SYSTEM
+}
+
+enum MessageStatus {
+  QUEUED
+  PROCESSING
+  STREAMING
+  COMPLETE
+  FAILED
+}
+
+enum JobStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+model User {
+  id             String             @id @default(uuid()) @db.Uuid
+  supabaseUserId String             @unique @db.Uuid
+  email          String             @unique @db.Citext
+  firstName      String
+  lastName       String
+  platformRole   PlatformRole?
+  status         UserStatus         @default(ACTIVE)
+  memberships    ClientMembership[]
+  createdEvents  Event[]            @relation("EventCreator")
+  documents      Document[]
+  conversations  Conversation[]
+  auditLogs      AuditLog[]         @relation("AuditActor")
+  createdAt      DateTime           @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime           @updatedAt @db.Timestamptz(3)
+}
+
+model Client {
+  id           String             @id @default(uuid()) @db.Uuid
+  name         String
+  slug         String             @unique
+  status       ClientStatus       @default(ACTIVE)
+  contactEmail String?            @db.Citext
+  memberships  ClientMembership[]
+  events       Event[]
+  auditLogs    AuditLog[]
+  jobs         BackgroundJob[]
+  outbox       OutboxEvent[]
+  createdAt    DateTime           @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime           @updatedAt @db.Timestamptz(3)
+}
+
+model ClientMembership {
+  id          String                       @id @default(uuid()) @db.Uuid
+  userId      String                       @db.Uuid
+  clientId    String                       @db.Uuid
+  role        MembershipRole
+  status      MembershipStatus             @default(INVITED)
+  user        User                         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  client      Client                       @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  permissions ClientMembershipPermission[]
+  invitedAt   DateTime?                    @db.Timestamptz(3)
+  joinedAt    DateTime?                    @db.Timestamptz(3)
+  createdAt   DateTime                     @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime                     @updatedAt @db.Timestamptz(3)
+
+  @@unique([userId, clientId])
+  @@index([clientId, status])
+}
+
+model ClientMembershipPermission {
+  id           String           @id @default(uuid()) @db.Uuid
+  membershipId String           @db.Uuid
+  permission   String
+  membership   ClientMembership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+
+  @@unique([membershipId, permission])
+}
+
+model Event {
+  id                       String           @id @default(uuid()) @db.Uuid
+  clientId                 String           @db.Uuid
+  createdByUserId          String           @db.Uuid
+  name                     String
+  slug                     String           @unique
+  category                 String
+  description              String?
+  destination              String?
+  venue                    String?
+  venueAddress             String?
+  venueDetails             String?
+  restroomInformation      String?
+  accessibilityInformation String?
+  parkingInformation       String?
+  wifiInformation          String?
+  startAt                  DateTime?        @db.Timestamptz(3)
+  endAt                    DateTime?        @db.Timestamptz(3)
+  timezone                 String?
+  organizerName            String?
+  organizerEmail           String?          @db.Citext
+  status                   EventStatus      @default(DRAFT)
+  configuration            Json             @default("{}")
+  client                   Client           @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  createdBy                User             @relation("EventCreator", fields: [createdByUserId], references: [id])
+  facts                    EventFact[]
+  locations                EventLocation[]
+  contacts                 EventContact[]
+  schedule                 ScheduleItem[]
+  guests                   Guest[]
+  documents                Document[]
+  chunks                   DocumentChunk[]
+  knowledge                KnowledgeEntry[]
+  invitations              Invitation[]
+  guestSessions            GuestSession[]
+  conversations            Conversation[]
+  auditLogs                AuditLog[]
+  jobs                     BackgroundJob[]
+  outbox                   OutboxEvent[]
+  createdAt                DateTime         @default(now()) @db.Timestamptz(3)
+  updatedAt                DateTime         @updatedAt @db.Timestamptz(3)
+
+  @@index([clientId, status])
+  @@index([clientId, startAt])
+  @@index([createdByUserId, startAt])
+}
+
+model EventFact {
+  id               String     @id @default(uuid()) @db.Uuid
+  eventId          String     @db.Uuid
+  key              String
+  value            String
+  valueType        String     @default("text")
+  sourceType       SourceType
+  sourceDocumentId String?    @db.Uuid
+  sourcePage       Int?
+  sourceSection    String?
+  sourceUserId     String?    @db.Uuid
+  confidence       Decimal?   @db.Decimal(4, 3)
+  precedence       Int        @default(100)
+  event            Event      @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  sourceDocument   Document?  @relation(fields: [sourceDocumentId], references: [id], onDelete: SetNull)
+  createdAt        DateTime   @default(now()) @db.Timestamptz(3)
+  updatedAt        DateTime   @updatedAt @db.Timestamptz(3)
+
+  @@unique([eventId, key])
+  @@index([eventId, sourceType])
+}
+
+model EventLocation {
+  id        String   @id @default(uuid()) @db.Uuid
+  eventId   String   @db.Uuid
+  name      String
+  address   String?
+  type      String?
+  notes     String?
+  event     Event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  @@index([eventId])
+}
+
+model EventContact {
+  id          String   @id @default(uuid()) @db.Uuid
+  eventId     String   @db.Uuid
+  name        String
+  role        String?
+  email       String?  @db.Citext
+  phone       String?
+  isEmergency Boolean  @default(false)
+  event       Event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  createdAt   DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(3)
+
+  @@index([eventId])
+}
+
+model ScheduleItem {
+  id          String    @id @default(uuid()) @db.Uuid
+  eventId     String    @db.Uuid
+  title       String
+  description String?
+  startAt     DateTime  @db.Timestamptz(3)
+  endAt       DateTime? @db.Timestamptz(3)
+  location    String?
+  category    String?
+  visibility  String    @default("SHARED")
+  event       Event     @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  createdAt   DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime  @updatedAt @db.Timestamptz(3)
+
+  @@index([eventId, startAt])
+}
+
+model Guest {
+  id                     String         @id @default(uuid()) @db.Uuid
+  eventId                String         @db.Uuid
+  fullName               String
+  firstName              String?
+  lastName               String?
+  email                  String         @db.Citext
+  normalizedEmail        String
+  company                String?
+  jobTitle               String?
+  phone                  String?
+  guestGroup             String?
+  notesEncrypted         String?
+  dietaryEncrypted       String?
+  accessibilityEncrypted String?
+  accommodationEncrypted String?
+  travelEncrypted        String?
+  metadata               Json           @default("{}")
+  event                  Event          @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  invitations            Invitation[]
+  sessions               GuestSession[]
+  conversations          Conversation[]
+  createdAt              DateTime       @default(now()) @db.Timestamptz(3)
+  updatedAt              DateTime       @updatedAt @db.Timestamptz(3)
+
+  @@unique([eventId, normalizedEmail])
+  @@index([eventId, fullName])
+}
+
+model Invitation {
+  id             String           @id @default(uuid()) @db.Uuid
+  eventId        String           @db.Uuid
+  guestId        String?          @db.Uuid
+  type           InvitationType   @default(PERSONALIZED)
+  tokenHash      String?          @unique
+  tokenEncrypted String?
+  status         InvitationStatus @default(PENDING)
+  expiresAt      DateTime?        @db.Timestamptz(3)
+  sentAt         DateTime?        @db.Timestamptz(3)
+  acceptedAt     DateTime?        @db.Timestamptz(3)
+  revokedAt      DateTime?        @db.Timestamptz(3)
+  failureCode    String?
+  event          Event            @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  guest          Guest?           @relation(fields: [guestId], references: [id], onDelete: Cascade)
+  createdAt      DateTime         @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime         @updatedAt @db.Timestamptz(3)
+
+  @@index([eventId, status])
+  @@index([guestId])
+}
+
+model GuestSession {
+  id         String    @id @default(uuid()) @db.Uuid
+  guestId    String    @db.Uuid
+  eventId    String    @db.Uuid
+  tokenHash  String    @unique
+  expiresAt  DateTime  @db.Timestamptz(3)
+  revokedAt  DateTime? @db.Timestamptz(3)
+  lastUsedAt DateTime? @db.Timestamptz(3)
+  guest      Guest     @relation(fields: [guestId], references: [id], onDelete: Cascade)
+  event      Event     @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  createdAt  DateTime  @default(now()) @db.Timestamptz(3)
+
+  @@index([eventId, guestId])
+}
+
+model Document {
+  id               String              @id @default(uuid()) @db.Uuid
+  clientId         String              @db.Uuid
+  eventId          String              @db.Uuid
+  uploadedByUserId String              @db.Uuid
+  originalName     String
+  objectKey        String              @unique
+  bucket           String
+  mimeType         String
+  size             Int
+  checksum         String
+  processingStatus ProcessingStatus    @default(PENDING)
+  processingError  String?
+  parserVersion    String?
+  event            Event               @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  uploadedBy       User                @relation(fields: [uploadedByUserId], references: [id])
+  extraction       DocumentExtraction?
+  chunks           DocumentChunk[]
+  facts            EventFact[]
+  createdAt        DateTime            @default(now()) @db.Timestamptz(3)
+  updatedAt        DateTime            @updatedAt @db.Timestamptz(3)
+
+  @@unique([eventId, checksum])
+  @@index([eventId, processingStatus])
+  @@index([clientId, eventId])
+}
+
+model DocumentExtraction {
+  id                 String   @id @default(uuid()) @db.Uuid
+  documentId         String   @unique @db.Uuid
+  extractedText      String
+  parserVersion      String
+  extractionMetadata Json     @default("{}")
+  document           Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  processedAt        DateTime @default(now()) @db.Timestamptz(3)
+}
+
+model DocumentChunk {
+  id         String                       @id @default(uuid()) @db.Uuid
+  clientId   String                       @db.Uuid
+  eventId    String                       @db.Uuid
+  documentId String                       @db.Uuid
+  content    String
+  embedding  Unsupported("vector(1536)")?
+  pageNumber Int?
+  section    String?
+  metadata   Json                         @default("{}")
+  event      Event                        @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  document   Document                     @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  createdAt  DateTime                     @default(now()) @db.Timestamptz(3)
+
+  @@index([eventId])
+  @@index([clientId, eventId])
+}
+
+model KnowledgeEntry {
+  id         String     @id @default(uuid()) @db.Uuid
+  clientId   String     @db.Uuid
+  eventId    String     @db.Uuid
+  title      String?
+  content    String
+  sourceType SourceType
+  metadata   Json       @default("{}")
+  event      Event      @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  createdAt  DateTime   @default(now()) @db.Timestamptz(3)
+  updatedAt  DateTime   @updatedAt @db.Timestamptz(3)
+
+  @@index([eventId])
+  @@index([clientId, eventId])
+}
+
+model Conversation {
+  id        String                @id @default(uuid()) @db.Uuid
+  clientId  String                @db.Uuid
+  eventId   String                @db.Uuid
+  userId    String?               @db.Uuid
+  guestId   String?               @db.Uuid
+  type      ConversationType
+  event     Event                 @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  user      User?                 @relation(fields: [userId], references: [id], onDelete: SetNull)
+  guest     Guest?                @relation(fields: [guestId], references: [id], onDelete: SetNull)
+  messages  ConversationMessage[]
+  createdAt DateTime              @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime              @updatedAt @db.Timestamptz(3)
+
+  @@index([eventId, createdAt])
+  @@index([guestId])
+}
+
+model ConversationMessage {
+  id             String        @id @default(uuid()) @db.Uuid
+  conversationId String        @db.Uuid
+  role           MessageRole
+  content        String
+  status         MessageStatus @default(COMPLETE)
+  metadata       Json          @default("{}")
+  conversation   Conversation  @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  createdAt      DateTime      @default(now()) @db.Timestamptz(3)
+
+  @@index([conversationId, createdAt])
+}
+
+model AuditLog {
+  id          String   @id @default(uuid()) @db.Uuid
+  actorUserId String?  @db.Uuid
+  clientId    String?  @db.Uuid
+  eventId     String?  @db.Uuid
+  action      String
+  entityType  String
+  entityId    String?
+  requestId   String
+  metadata    Json     @default("{}")
+  actor       User?    @relation("AuditActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+  client      Client?  @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  event       Event?   @relation(fields: [eventId], references: [id], onDelete: SetNull)
+  createdAt   DateTime @default(now()) @db.Timestamptz(3)
+
+  @@index([clientId, createdAt])
+  @@index([eventId, createdAt])
+  @@index([actorUserId, createdAt])
+}
+
+model OutboxEvent {
+  id          String    @id @default(uuid()) @db.Uuid
+  clientId    String?   @db.Uuid
+  eventId     String?   @db.Uuid
+  type        String
+  aggregateId String
+  payload     Json
+  attempts    Int       @default(0)
+  availableAt DateTime  @default(now()) @db.Timestamptz(3)
+  processedAt DateTime? @db.Timestamptz(3)
+  lastError   String?
+  client      Client?   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  event       Event?    @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  createdAt   DateTime  @default(now()) @db.Timestamptz(3)
+
+  @@index([processedAt, availableAt])
+  @@index([clientId, createdAt])
+}
+
+model BackgroundJob {
+  id             String    @id @default(uuid()) @db.Uuid
+  clientId       String?   @db.Uuid
+  eventId        String?   @db.Uuid
+  type           String
+  idempotencyKey String    @unique
+  payload        Json
+  status         JobStatus @default(PENDING)
+  progress       Int       @default(0)
+  attempts       Int       @default(0)
+  maxAttempts    Int       @default(5)
+  availableAt    DateTime  @default(now()) @db.Timestamptz(3)
+  lockedAt       DateTime? @db.Timestamptz(3)
+  lockedBy       String?
+  lastError      String?
+  completedAt    DateTime? @db.Timestamptz(3)
+  client         Client?   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  event          Event?    @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  createdAt      DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime  @updatedAt @db.Timestamptz(3)
+
+  @@index([status, availableAt])
+  @@index([eventId, status])
+}

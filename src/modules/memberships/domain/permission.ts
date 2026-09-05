@@ -1,0 +1,31 @@
+export const Permission = {
+  EVENT_CREATE: 'EVENT_CREATE',
+  EVENT_READ: 'EVENT_READ',
+  EVENT_EDIT: 'EVENT_EDIT',
+  EVENT_DELETE: 'EVENT_DELETE',
+  EVENT_PUBLISH: 'EVENT_PUBLISH',
+  DOCUMENT_UPLOAD: 'DOCUMENT_UPLOAD',
+  GUEST_READ: 'GUEST_READ',
+  GUEST_MANAGE: 'GUEST_MANAGE',
+  GUEST_IMPORT: 'GUEST_IMPORT',
+  INVITATION_READ: 'INVITATION_READ',
+  INVITATION_SEND: 'INVITATION_SEND',
+  INVITATION_REVOKE: 'INVITATION_REVOKE',
+  TEAM_READ: 'TEAM_READ',
+  TEAM_MANAGE: 'TEAM_MANAGE',
+  CLIENT_SETTINGS_MANAGE: 'CLIENT_SETTINGS_MANAGE',
+} as const;
+
+export type Permission = (typeof Permission)[keyof typeof Permission];
+
+export const operationalPermissions: Permission[] = [
+  Permission.EVENT_CREATE,
+  Permission.EVENT_READ,
+  Permission.EVENT_EDIT,
+  Permission.EVENT_DELETE,
+  Permission.DOCUMENT_UPLOAD,
+  Permission.GUEST_READ,
+  Permission.GUEST_MANAGE,
+  Permission.GUEST_IMPORT,
+  Permission.INVITATION_READ,
+];
