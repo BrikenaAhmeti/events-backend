@@ -14,14 +14,10 @@ export const environmentSchema = z
     SUPABASE_URL: optionalUrl,
     SUPABASE_PUBLISHABLE_KEY: z.string().default(''),
     SUPABASE_SECRET_KEY: z.string().default(''),
+    SUPABASE_STORAGE_BUCKET: z.string().default('events-files'),
     OPENAI_API_KEY: z.string().default(''),
     OPENAI_MODEL: z.string().default('gpt-5.6'),
     OPENAI_EMBEDDING_MODEL: z.string().default('text-embedding-3-small'),
-    R2_ACCOUNT_ID: z.string().default(''),
-    R2_ENDPOINT: optionalUrl,
-    R2_BUCKET: z.string().default(''),
-    R2_ACCESS_KEY_ID: z.string().default(''),
-    R2_SECRET_ACCESS_KEY: z.string().default(''),
     EMAIL_PROVIDER: z.enum(['resend', 'smtp']).default('smtp'),
     RESEND_API_KEY: z.string().default(''),
     EMAIL_FROM: z.string().default(''),
@@ -46,17 +42,18 @@ export const environmentSchema = z
       'SUPABASE_URL',
       'SUPABASE_PUBLISHABLE_KEY',
       'SUPABASE_SECRET_KEY',
+      'SUPABASE_STORAGE_BUCKET',
       'OPENAI_API_KEY',
-      'R2_ENDPOINT',
-      'R2_BUCKET',
-      'R2_ACCESS_KEY_ID',
-      'R2_SECRET_ACCESS_KEY',
       'EMAIL_FROM',
       'DATA_ENCRYPTION_KEY',
     ] as const;
     for (const field of required) {
       if (!environment[field])
-        context.addIssue({ code: 'custom', path: [field], message: 'Required in production' });
+        context.addIssue({
+          code: 'custom',
+          path: [field],
+          message: 'Required in production',
+        });
     }
     if (environment.EMAIL_PROVIDER === 'resend' && !environment.RESEND_API_KEY)
       context.addIssue({

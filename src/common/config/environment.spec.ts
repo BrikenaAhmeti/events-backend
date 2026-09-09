@@ -14,7 +14,11 @@ describe('environment validation', () => {
 
   it('parses provider-neutral SMTP settings without treating false as true', () => {
     expect(
-      validateEnvironment({ NODE_ENV: 'test', EMAIL_PROVIDER: 'smtp', SMTP_SECURE: 'false' }),
+      validateEnvironment({
+        NODE_ENV: 'test',
+        EMAIL_PROVIDER: 'smtp',
+        SMTP_SECURE: 'false',
+      }),
     ).toMatchObject({
       EMAIL_PROVIDER: 'smtp',
       SMTP_PORT: 587,
@@ -32,11 +36,8 @@ describe('environment validation', () => {
         SUPABASE_URL: 'https://project.supabase.co',
         SUPABASE_PUBLISHABLE_KEY: 'publishable-key',
         SUPABASE_SECRET_KEY: 'secret-key',
+        SUPABASE_STORAGE_BUCKET: 'event-documents',
         OPENAI_API_KEY: 'openai-key',
-        R2_ENDPOINT: 'https://account.r2.cloudflarestorage.com',
-        R2_BUCKET: 'private-bucket',
-        R2_ACCESS_KEY_ID: 'access-key',
-        R2_SECRET_ACCESS_KEY: 'secret-access-key',
         EMAIL_PROVIDER: 'smtp',
         EMAIL_FROM: 'Feliam <concierge@example.com>',
         SMTP_HOST: 'smtp.example.com',

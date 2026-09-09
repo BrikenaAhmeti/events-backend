@@ -12,7 +12,7 @@ React/Vite
 NestJS modular monolith
     |-- Supabase Auth
     |-- Supabase PostgreSQL + pgvector
-    |-- private Cloudflare R2
+    |-- private Supabase Storage
     |-- OpenAI Responses + embeddings
     `-- Resend or SMTP
 ```
@@ -80,9 +80,9 @@ Operational lifecycle (`UNSCHEDULED`, `UPCOMING`, `ONGOING`, `PAST`, `CANCELLED`
 
 Source precedence is explicit organizer input over newer validated sources over older extracted facts. Model output is candidate data only. Zod validation and application commands execute before persistence.
 
-## Documents and R2
+## Documents and Supabase Storage
 
-`FileStorage` is provider neutral. `R2FileStorage` contains all Cloudflare/S3 configuration. The application stores object metadata and checksums in PostgreSQL, never binary files.
+`FileStorage` is provider neutral. `SupabaseFileStorage` keeps documents in a private bucket through a backend-only Supabase client. The application stores object metadata and checksums in PostgreSQL, never binary files, and exposes only short-lived signed download URLs.
 
 The ingestion path is authorization → file checks → checksum/deduplication → private upload → document/audit records → durable job → bounded parse → schema-constrained extraction → domain validation → structured facts/schedule → chunks/embeddings → event-scoped vector rows → readiness → WebSocket status.
 

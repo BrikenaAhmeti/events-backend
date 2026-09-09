@@ -9,14 +9,14 @@ Production-oriented NestJS API for the multi-tenant Feliam event concierge produ
 - Prisma and Supabase-hosted PostgreSQL
 - `pgvector` for event-scoped semantic retrieval
 - Supabase Auth for platform identity
-- private Cloudflare R2 storage through the S3-compatible API
+- private Supabase Storage with signed download URLs
 - OpenAI Responses API and embeddings behind an `AiProvider`
 - Resend or SMTP behind an `EmailProvider`
 - Socket.IO through a NestJS gateway
 - PostgreSQL-backed jobs and transactional outbox
 - Vitest, ESLint, Prettier and strict TypeScript
 
-No Docker, Redis, local PostgreSQL, MinIO, Supabase Storage, Supabase Realtime, external vector database, GraphQL or microservices are required.
+No Docker, Redis, local PostgreSQL, MinIO, Supabase Realtime, external vector database, GraphQL or microservices are required.
 
 ## Quick start
 
@@ -52,18 +52,13 @@ For SMTP on Vercel, use port `465` or `587`, not port `25`. The durable PostgreS
 2. Open Project Settings → Database and copy the pooled runtime connection into `DATABASE_URL`.
 3. Copy the direct/session connection into `DIRECT_DATABASE_URL`. Prisma migrations must use a connection that supports DDL and is not transaction-pooled.
 4. Copy the project URL, publishable key and backend-only secret key into the matching variables.
-5. Configure the frontend application URL as an allowed Auth redirect URL.
-6. Run `pnpm db:migrate:deploy`. The migration enables `citext` and `vector` and creates the HNSW vector index.
+5. In Storage, create a private bucket and set its name in `SUPABASE_STORAGE_BUCKET`.
+6. Configure the frontend application URL as an allowed Auth redirect URL.
+7. Run `pnpm db:migrate:deploy`. The migration enables `citext` and `vector` and creates the HNSW vector index.
 
 Prisma application authorization is the primary database access boundary. This implementation does not represent Supabase RLS as protecting a Prisma connection that may use a bypass-capable role. If RLS is added later, use and test a non-bypass database role while retaining all NestJS policies.
 
-## Cloudflare R2 setup
-
-1. Create a private R2 bucket.
-2. Create a scoped API token with object read/write/delete only for that bucket.
-3. Fill `R2_ENDPOINT`, `R2_BUCKET`, `R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY`.
-
-Object keys are server generated and tenant/event scoped. Original filenames are metadata only. Downloads use short-lived signed URLs. Browser code never receives R2 credentials.
+Supabase Storage uses the same `SUPABASE_URL` and backend-only `SUPABASE_SECRET_KEY` as administrative authentication. The bucket must remain private. Object keys are server generated and tenant/event scoped, original filenames are metadata only, and browsers receive only short-lived signed download URLs.
 
 ## Email setup
 
@@ -101,14 +96,10 @@ If a different embedding model changes vector dimensions, update the `DocumentCh
 | `SUPABASE_URL`             | platform auth               | Supabase project URL                              |
 | `SUPABASE_PUBLISHABLE_KEY` | platform auth               | backend-held publishable key                      |
 | `SUPABASE_SECRET_KEY`      | administrative auth         | backend only; never use a `VITE_` prefix          |
+| `SUPABASE_STORAGE_BUCKET`  | documents                   | private Supabase Storage bucket                   |
 | `OPENAI_API_KEY`           | Concierge                   | backend only                                      |
 | `OPENAI_MODEL`             | Concierge                   | defaults to `gpt-5.6`                             |
 | `OPENAI_EMBEDDING_MODEL`   | knowledge                   | defaults to `text-embedding-3-small`              |
-| `R2_ACCOUNT_ID`            | reference                   | Cloudflare account identifier                     |
-| `R2_ENDPOINT`              | documents                   | S3-compatible endpoint                            |
-| `R2_BUCKET`                | documents                   | private bucket name                               |
-| `R2_ACCESS_KEY_ID`         | documents                   | backend only                                      |
-| `R2_SECRET_ACCESS_KEY`     | documents                   | backend only                                      |
 | `EMAIL_PROVIDER`           | email                       | `smtp` by default; `resend` remains optional      |
 | `RESEND_API_KEY`           | Resend email                | required only when `EMAIL_PROVIDER=resend`        |
 | `EMAIL_FROM`               | email                       | verified sender                                   |
