@@ -4,6 +4,7 @@ Production-oriented NestJS API for the multi-tenant Feliam event concierge produ
 
 ## Stack
 
+
 - Node.js 22 LTS and pnpm
 - NestJS modular monolith with `@nestjs/cqrs`
 - Prisma and Supabase-hosted PostgreSQL
