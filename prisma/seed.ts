@@ -23,7 +23,15 @@ async function resolveIdentity(
     const { data, error } = await auth.auth.admin.listUsers({ page, perPage: 100 });
     if (error) throw error;
     const existing = data.users.find((user) => user.email?.toLowerCase() === email.toLowerCase());
-    if (existing) return existing.id;
+    if (existing) {
+      const { data: updated, error: updateError } = await auth.auth.admin.updateUserById(
+        existing.id,
+        { password, email_confirm: true },
+      );
+      if (updateError || !updated.user)
+        throw updateError ?? new Error('SupabaseUserUpdateFailed');
+      return updated.user.id;
+    }
     if (data.users.length < 100) break;
   }
   const { data, error } = await auth.auth.admin.createUser({

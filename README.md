@@ -95,8 +95,7 @@ If a different embedding model changes vector dimensions, update the `DocumentCh
 | `DATABASE_URL`             | application                 | Supabase pooled PostgreSQL URL                    |
 | `DIRECT_DATABASE_URL`      | migrations                  | Supabase direct/session PostgreSQL URL            |
 | `SUPABASE_URL`             | platform auth               | Supabase project URL                              |
-| `SUPABASE_PUBLISHABLE_KEY` | platform auth               | backend-held publishable key                      |
-| `SUPABASE_SECRET_KEY`      | administrative auth         | backend only; never use a `VITE_` prefix          |
+| `SUPABASE_SECRET_KEY`      | platform and admin auth     | backend only; never use a `VITE_` prefix          |
 | `SUPABASE_STORAGE_BUCKET`  | documents                   | private Supabase Storage bucket                   |
 | `OPENAI_API_KEY`           | Concierge                   | backend only                                      |
 | `OPENAI_MODEL`             | Concierge                   | defaults to `gpt-5.6`                             |

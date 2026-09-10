@@ -34,7 +34,6 @@ describe('environment validation', () => {
         DATABASE_URL: 'postgresql://database.example/app',
         DIRECT_DATABASE_URL: 'postgresql://database.example/app',
         SUPABASE_URL: 'https://project.supabase.co',
-        SUPABASE_PUBLISHABLE_KEY: 'publishable-key',
         SUPABASE_SECRET_KEY: 'secret-key',
         SUPABASE_STORAGE_BUCKET: 'event-documents',
         OPENAI_API_KEY: 'openai-key',

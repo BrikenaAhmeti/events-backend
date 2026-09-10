@@ -1,8 +1,18 @@
 import { Injectable } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import type { AuthenticatedActor } from '../../../common/types/request.types';
 import { PrismaService } from '../../../infrastructure/database/prisma.service';
 import { EventCompletenessService } from '../../events/domain/event-completeness.service';
 import { Permission } from '../../memberships/domain/permission';
+
+type DashboardMetrics = {
+  clients: number;
+  activeClients: number;
+  events: number;
+  upcoming: number;
+  drafts: number;
+  published: number;
+};
 
 @Injectable()
 export class DashboardService {
@@ -19,37 +29,25 @@ export class DashboardService {
             .filter(
               ({ status, role, permissions }) =>
                 status === 'ACTIVE' &&
-                (role === 'CLIENT_ADMIN' || permissions.includes(Permission.EVENT_READ)),
+                (role === 'CLIENT_ADMIN' ||
+                  permissions.includes(Permission.EVENT_READ)),
             )
             .map(({ clientId }) => clientId);
     const eventWhere = clientIds ? { clientId: { in: clientIds } } : {};
-    const clientWhere = clientIds ? { id: { in: clientIds } } : {};
     const now = new Date();
-    const [
-      clients,
-      activeClients,
-      events,
-      upcoming,
-      drafts,
-      published,
-      recentEvents,
-      recentActivity,
-    ] = await Promise.all([
-      this.prisma.client.count({ where: clientWhere }),
-      this.prisma.client.count({ where: { ...clientWhere, status: 'ACTIVE' } }),
-      this.prisma.event.count({ where: eventWhere }),
-      this.prisma.event.count({
-        where: { ...eventWhere, startAt: { gte: now }, status: { in: ['READY', 'PUBLISHED'] } },
-      }),
-      this.prisma.event.count({ where: { ...eventWhere, status: 'DRAFT' } }),
-      this.prisma.event.count({ where: { ...eventWhere, status: 'PUBLISHED' } }),
+    const [metricsRows, recentEvents, recentActivity] = await Promise.all([
+      this.prisma.$queryRaw<DashboardMetrics[]>(
+        this.metricsQuery(clientIds, now),
+      ),
       this.prisma.event.findMany({
         where: eventWhere,
         take: 6,
         orderBy: { updatedAt: 'desc' },
         include: {
           client: { select: { id: true, name: true } },
-          _count: { select: { guests: true, documents: true, invitations: true } },
+          _count: {
+            select: { guests: true, documents: true, invitations: true },
+          },
         },
       }),
       this.prisma.auditLog.findMany({
@@ -66,13 +64,58 @@ export class DashboardService {
         },
       }),
     ]);
+    const metrics = metricsRows[0] ?? {
+      clients: 0,
+      activeClients: 0,
+      events: 0,
+      upcoming: 0,
+      drafts: 0,
+      published: 0,
+    };
     return {
-      metrics: { clients, activeClients, events, upcoming, drafts, published },
+      metrics,
       recentEvents: recentEvents.map((event) => ({
         ...event,
         completeness: this.completeness.evaluate(event),
       })),
       recentActivity,
     };
+  }
+
+  private metricsQuery(clientIds: string[] | undefined, now: Date): Prisma.Sql {
+    const clientScope =
+      clientIds === undefined
+        ? Prisma.sql`TRUE`
+        : clientIds.length === 0
+          ? Prisma.sql`FALSE`
+          : Prisma.sql`c."id" IN (${Prisma.join(clientIds)})`;
+    const eventScope =
+      clientIds === undefined
+        ? Prisma.sql`TRUE`
+        : clientIds.length === 0
+          ? Prisma.sql`FALSE`
+          : Prisma.sql`e."clientId" IN (${Prisma.join(clientIds)})`;
+
+    return Prisma.sql`
+      WITH "clientMetrics" AS (
+        SELECT
+          COUNT(*)::integer AS "clients",
+          (COUNT(*) FILTER (WHERE c."status" = 'ACTIVE'))::integer AS "activeClients"
+        FROM "Client" AS c
+        WHERE ${clientScope}
+      ),
+      "eventMetrics" AS (
+        SELECT
+          COUNT(*)::integer AS "events",
+          (COUNT(*) FILTER (
+            WHERE e."startAt" >= ${now} AND e."status" IN ('READY', 'PUBLISHED')
+          ))::integer AS "upcoming",
+          (COUNT(*) FILTER (WHERE e."status" = 'DRAFT'))::integer AS "drafts",
+          (COUNT(*) FILTER (WHERE e."status" = 'PUBLISHED'))::integer AS "published"
+        FROM "Event" AS e
+        WHERE ${eventScope}
+      )
+      SELECT * FROM "clientMetrics" CROSS JOIN "eventMetrics"
+    `;
   }
 }

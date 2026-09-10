@@ -11,7 +11,7 @@ export class SupabaseAuthProvider {
   constructor(private readonly config: ConfigService<Environment, true>) {}
 
   async login(email: string, password: string): Promise<AuthSession> {
-    const { data, error } = await this.publicClient().auth.signInWithPassword({ email, password });
+    const { data, error } = await this.authClient().auth.signInWithPassword({ email, password });
     if (error || !data.session) {
       throw new ApplicationError(401, 'INVALID_CREDENTIALS', 'Email or password is incorrect.');
     }
@@ -19,7 +19,7 @@ export class SupabaseAuthProvider {
   }
 
   async refresh(refreshToken: string): Promise<AuthSession> {
-    const { data, error } = await this.publicClient().auth.refreshSession({
+    const { data, error } = await this.authClient().auth.refreshSession({
       refresh_token: refreshToken,
     });
     if (error || !data.session) {
@@ -28,12 +28,13 @@ export class SupabaseAuthProvider {
     return data.session;
   }
 
-  async verify(accessToken: string): Promise<User> {
-    const { data, error } = await this.publicClient().auth.getUser(accessToken);
-    if (error || !data.user) {
+  async verify(accessToken: string): Promise<{ id: string }> {
+    const { data, error } = await this.authClient().auth.getClaims(accessToken);
+    const subject = data?.claims.sub;
+    if (error || typeof subject !== 'string' || !subject) {
       throw new ApplicationError(401, 'UNAUTHENTICATED', 'Authentication is required.');
     }
-    return data.user;
+    return { id: subject };
   }
 
   async createPasswordResetToken(email: string, redirectTo: string): Promise<string> {
@@ -53,7 +54,7 @@ export class SupabaseAuthProvider {
   }
 
   async changePassword(email: string, currentPassword: string, newPassword: string): Promise<void> {
-    const client = this.publicClient();
+    const client = this.authClient();
     const { data, error } = await client.auth.signInWithPassword({
       email,
       password: currentPassword,
@@ -100,7 +101,7 @@ export class SupabaseAuthProvider {
     password: string,
     type: 'invite' | 'recovery',
   ): Promise<{ session: AuthSession; user: User }> {
-    const client = this.publicClient();
+    const client = this.authClient();
     const { data, error } = await client.auth.verifyOtp({ token_hash: tokenHash, type });
     if (error || !data.session || !data.user)
       throw new ApplicationError(
@@ -134,9 +135,9 @@ export class SupabaseAuthProvider {
     return data.user.id;
   }
 
-  private publicClient() {
+  private authClient() {
     const url = this.config.get('SUPABASE_URL', { infer: true });
-    const key = this.config.get('SUPABASE_PUBLISHABLE_KEY', { infer: true });
+    const key = this.config.get('SUPABASE_SECRET_KEY', { infer: true });
     if (!url || !key) throw this.unavailable();
     return createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
   }
