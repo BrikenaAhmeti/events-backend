@@ -7,6 +7,7 @@ import helmet from 'helmet';
 import { Logger } from 'nestjs-pino';
 import { AppModule } from './app.module';
 import type { Environment } from './common/config/environment';
+import { normalizeOrigin } from './common/security/origin';
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create(AppModule, { bufferLogs: true });
@@ -26,10 +27,15 @@ async function bootstrap(): Promise<void> {
       referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
     }),
   );
+  const allowedOrigins = [
+    config.get('FRONTEND_URL', { infer: true }),
+    config.get('PUBLIC_APP_URL', { infer: true }),
+  ].map(normalizeOrigin);
   app.enableCors({
-    origin: [config.get('FRONTEND_URL', { infer: true })],
+    origin: [...new Set(allowedOrigins)],
     credentials: true,
     allowedHeaders: ['Content-Type', 'X-CSRF-Token', 'X-Request-Id'],
+    exposedHeaders: ['X-Request-Id'],
   });
   app.setGlobalPrefix('api');
   app.enableVersioning({ type: VersioningType.URI, defaultVersion: '1' });

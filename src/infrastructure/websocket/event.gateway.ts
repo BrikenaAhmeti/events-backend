@@ -9,6 +9,7 @@ import {
 } from '@nestjs/websockets';
 import type { Server, Socket } from 'socket.io';
 import type { Environment } from '../../common/config/environment';
+import { isSameOrigin } from '../../common/security/origin';
 import type { AuthenticatedActor } from '../../common/types/request.types';
 import { AuthorizationService } from '../../modules/memberships/application/authorization.service';
 import { Permission } from '../../modules/memberships/domain/permission';
@@ -21,7 +22,7 @@ const allowConfiguredOrigin = (
   origin: string | undefined,
   callback: (error: Error | null, allowed?: boolean) => void,
 ) => {
-  callback(null, origin === (process.env.FRONTEND_URL ?? 'http://localhost:5173'));
+  callback(null, isSameOrigin(origin, process.env.FRONTEND_URL ?? 'http://localhost:5173'));
 };
 
 @WebSocketGateway({
@@ -45,7 +46,7 @@ export class EventGateway implements OnGatewayConnection {
 
   handleConnection(socket: Socket): void {
     const origin = socket.handshake.headers.origin;
-    if (origin !== this.config.get('FRONTEND_URL', { infer: true })) {
+    if (!isSameOrigin(origin, this.config.get('FRONTEND_URL', { infer: true }))) {
       socket.disconnect(true);
       return;
     }

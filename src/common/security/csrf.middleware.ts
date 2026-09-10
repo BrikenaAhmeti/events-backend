@@ -6,6 +6,7 @@ import { ApplicationError } from '../errors/application.error';
 import type { RequestContext } from '../types/request.types';
 import { CSRF_COOKIE } from './cookie.constants';
 import { CsrfService } from './csrf.service';
+import { isSameOrigin } from './origin';
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
@@ -35,14 +36,9 @@ export class CsrfMiddleware implements NestMiddleware {
   }
 
   private validateOrigin(request: RequestContext): void {
-    const allowed = new URL(this.config.get('FRONTEND_URL', { infer: true })).origin;
+    const allowed = this.config.get('FRONTEND_URL', { infer: true });
     const supplied = request.header('origin') ?? request.header('referer');
-    try {
-      if (!supplied || new URL(supplied).origin !== allowed) {
-        throw new ApplicationError(403, 'ORIGIN_NOT_ALLOWED', 'Request origin is not allowed.');
-      }
-    } catch (error) {
-      if (error instanceof ApplicationError) throw error;
+    if (!isSameOrigin(supplied, allowed)) {
       throw new ApplicationError(403, 'ORIGIN_NOT_ALLOWED', 'Request origin is not allowed.');
     }
   }
