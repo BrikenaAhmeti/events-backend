@@ -24,6 +24,46 @@ const createService = (invitation: unknown) => {
 };
 
 describe('GuestAccessService invitation security', () => {
+  it('returns only minimal event identity before a guest confirms access', async () => {
+    const findFirst = vi.fn().mockResolvedValue({
+      id: 'event-a',
+      slug: 'leadership-forum',
+      name: 'Leadership Forum',
+      category: 'CONFERENCE',
+      description: 'A leadership event.',
+      destination: 'Lisbon',
+      venue: 'Riverside Hall',
+      startAt: new Date(Date.now() - 60 * 60 * 1000),
+      endAt: new Date(Date.now() + 60 * 60 * 1000),
+      timezone: 'Europe/Lisbon',
+      status: 'PUBLISHED',
+    });
+    const prisma = { event: { findFirst } } as unknown as PrismaService;
+    const config = {
+      get: (key: string) => (key === 'NODE_ENV' ? 'test' : ''),
+    } as unknown as ConfigService<Environment, true>;
+    const service = new GuestAccessService(
+      prisma,
+      new TokenService(),
+      new RateLimitService(),
+      config,
+      new GuestAccessWindowService(),
+    );
+
+    await expect(service.publicEvent('leadership-forum')).resolves.toMatchObject({
+      id: 'event-a',
+      accessState: 'ACTIVE',
+    });
+    const query = findFirst.mock.calls[0]?.[0] as { select: Record<string, boolean> };
+    expect(query.select).not.toHaveProperty('venueAddress');
+    expect(query.select).not.toHaveProperty('venueDetails');
+    expect(query.select).not.toHaveProperty('restroomInformation');
+    expect(query.select).not.toHaveProperty('accessibilityInformation');
+    expect(query.select).not.toHaveProperty('parkingInformation');
+    expect(query.select).not.toHaveProperty('wifiInformation');
+    expect(query.select).not.toHaveProperty('organizerName');
+  });
+
   it('denies expired invitations', async () => {
     const service = createService({
       guestId: 'guest-a',

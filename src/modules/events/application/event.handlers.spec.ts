@@ -102,6 +102,53 @@ describe('CreateEventDraftHandler', () => {
       }),
     );
   });
+
+  it('records the actual platform administrator while assigning the event to the selected client', async () => {
+    const platformAdministrator: AuthenticatedActor = {
+      ...actor,
+      userId: 'platform-admin',
+      platformRole: 'SUPER_ADMIN',
+      memberships: [],
+    };
+    const createEvent = vi
+      .fn<(input: { data: Record<string, unknown> }) => Promise<typeof readyEvent>>()
+      .mockResolvedValue({ ...readyEvent, id: 'event-b', clientId: 'client-b' });
+    const createAudit = vi
+      .fn<(input: { data: Record<string, unknown> }) => Promise<{ id: string }>>()
+      .mockResolvedValue({ id: 'audit-b' });
+    const databaseTransaction = {
+      event: { create: createEvent },
+      auditLog: { create: createAudit },
+    };
+    const prisma = {
+      $transaction: vi.fn((work: (transaction: typeof databaseTransaction) => unknown) =>
+        work(databaseTransaction),
+      ),
+    } as unknown as PrismaService;
+    const handler = new CreateEventDraftHandler(
+      prisma,
+      new AuthorizationService(),
+      new EventCompletenessService(),
+    );
+
+    await handler.execute(
+      new CreateEventDraftCommand(platformAdministrator, 'request-b', {
+        clientId: 'client-b',
+        name: 'Leadership Forum',
+        category: 'CONFERENCE',
+      }),
+    );
+
+    expect(createEvent.mock.calls[0]?.[0].data).toMatchObject({
+      clientId: 'client-b',
+      createdByUserId: 'platform-admin',
+    });
+    expect(createAudit.mock.calls[0]?.[0].data).toMatchObject({
+      actorUserId: 'platform-admin',
+      clientId: 'client-b',
+      eventId: 'event-b',
+    });
+  });
 });
 
 describe('PublishEventHandler', () => {

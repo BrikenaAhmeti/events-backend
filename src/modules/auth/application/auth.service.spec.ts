@@ -1,4 +1,5 @@
 import type { ConfigService } from '@nestjs/config';
+import type { Response } from 'express';
 import type { Environment } from '../../../common/config/environment';
 import type { CsrfService } from '../../../common/security/csrf.service';
 import type { AuthenticatedActor } from '../../../common/types/request.types';
@@ -6,6 +7,10 @@ import type { PrismaService } from '../../../infrastructure/database/prisma.serv
 import type { AuditService } from '../../audit/application/audit.service';
 import type { SupabaseAuthProvider } from '../infrastructure/supabase-auth.provider';
 import { AuthService } from './auth.service';
+import {
+  PLATFORM_SESSION_TTL_MS,
+  PlatformSessionCookieService,
+} from './platform-session-cookie.service';
 
 const actor: AuthenticatedActor = {
   userId: 'user-a',
@@ -36,6 +41,7 @@ function createService() {
     user: {
       findUnique: vi.fn().mockResolvedValue({
         id: actor.userId,
+        supabaseUserId: actor.supabaseUserId,
         email: actor.email,
         firstName: 'New',
         lastName: 'Name',
@@ -55,16 +61,35 @@ function createService() {
     },
   };
   const provider = {
+    login: vi.fn().mockResolvedValue({
+      access_token: 'access-token-a',
+      refresh_token: 'refresh-token-a',
+      expires_in: 60 * 60,
+    }),
+    refresh: vi.fn().mockResolvedValue({
+      access_token: 'access-token-b',
+      refresh_token: 'refresh-token-b',
+      expires_in: 60 * 60,
+    }),
+    verify: vi.fn().mockResolvedValue({ id: actor.supabaseUserId }),
     changePassword: vi.fn(),
     createPasswordResetToken: vi.fn().mockResolvedValue('recovery-token-hash'),
   };
   const audit = { record: vi.fn() };
   const email = { send: vi.fn() };
   const config = {
-    get: vi.fn((key: string) =>
-      key === 'PUBLIC_APP_URL' ? 'https://feliam.example' : key === 'PRODUCT_NAME' ? 'Feliam' : '',
-    ),
+    get: vi.fn((key: string) => {
+      if (key === 'PUBLIC_APP_URL') return 'https://feliam.example';
+      if (key === 'PRODUCT_NAME') return 'Feliam';
+      if (key === 'COOKIE_SECRET') return 'test-cookie-secret-with-at-least-32-characters';
+      if (key === 'NODE_ENV') return 'test';
+      if (key === 'COOKIE_SAME_SITE') return 'lax';
+      return '';
+    }),
   };
+  const sessionCookies = new PlatformSessionCookieService(
+    config as unknown as ConfigService<Environment, true>,
+  );
   const service = new AuthService(
     provider as unknown as SupabaseAuthProvider,
     prisma as unknown as PrismaService,
@@ -72,8 +97,15 @@ function createService() {
     config as unknown as ConfigService<Environment, true>,
     audit as unknown as AuditService,
     email,
+    sessionCookies,
   );
   return { service, provider, prisma, transaction, audit, email };
+}
+
+function createResponse() {
+  const cookie = vi.fn();
+  const clearCookie = vi.fn();
+  return { response: { cookie, clearCookie } as unknown as Response, cookie, clearCookie };
 }
 
 describe('AuthService account settings', () => {
@@ -136,5 +168,59 @@ describe('AuthService account settings', () => {
       html: '<p>We received a request to reset your Feliam password.</p><p><a href="https://feliam.example/reset-password?token_hash=recovery-token-hash">Reset password</a></p><p>If you did not request this, you can ignore this email.</p>',
       idempotencyKey: 'password-reset-recovery-token-hash',
     });
+  });
+});
+
+describe('AuthService platform sessions', () => {
+  afterEach(() => vi.useRealTimers());
+
+  it('rotates Supabase tokens without extending the absolute 24-hour login', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-10T08:00:00.000Z'));
+    const { service, provider } = createService();
+    const loginResponse = createResponse();
+
+    await service.login(actor.email, 'password123', loginResponse.response);
+
+    const accessCookie = loginResponse.cookie.mock.calls.find(([name]) => name === 'event_access');
+    const refreshCookie = loginResponse.cookie.mock.calls.find(([name]) => name === 'event_refresh');
+    expect(accessCookie).toEqual([
+      'event_access',
+      'access-token-a',
+      expect.objectContaining({ httpOnly: true, maxAge: 60 * 60 * 1000 }),
+    ]);
+    expect(refreshCookie?.[1]).not.toBe('refresh-token-a');
+    expect(refreshCookie?.[2]).toEqual(
+      expect.objectContaining({ httpOnly: true, maxAge: PLATFORM_SESSION_TTL_MS }),
+    );
+
+    vi.advanceTimersByTime(60 * 60 * 1000);
+    const refreshResponse = createResponse();
+    await service.refresh(String(refreshCookie?.[1]), refreshResponse.response);
+
+    expect(provider.refresh).toHaveBeenCalledWith('refresh-token-a');
+    expect(refreshResponse.cookie).toHaveBeenCalledWith(
+      'event_refresh',
+      expect.any(String),
+      expect.objectContaining({ maxAge: 23 * 60 * 60 * 1000 }),
+    );
+  });
+
+  it('rejects refresh after 24 hours and removes both authentication cookies', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-10T08:00:00.000Z'));
+    const { service, provider } = createService();
+    const loginResponse = createResponse();
+    await service.login(actor.email, 'password123', loginResponse.response);
+    const refreshCookie = loginResponse.cookie.mock.calls.find(([name]) => name === 'event_refresh');
+
+    vi.advanceTimersByTime(PLATFORM_SESSION_TTL_MS + 1);
+    const refreshResponse = createResponse();
+    await expect(service.refresh(String(refreshCookie?.[1]), refreshResponse.response)).rejects.toMatchObject(
+      { statusCode: 401, code: 'SESSION_EXPIRED' },
+    );
+
+    expect(provider.refresh).not.toHaveBeenCalled();
+    expect(refreshResponse.clearCookie).toHaveBeenCalledTimes(2);
   });
 });

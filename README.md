@@ -166,7 +166,7 @@ All routes are under `/api/v1`.
 - guest access: `/guest/events/:eventId`
 - readiness: `/health`
 
-Supabase access and refresh credentials are stored only in distinct HttpOnly cookies. State-changing browser requests require the signed double-submit CSRF token in `X-CSRF-Token` and pass exact Origin/Referer validation. Frontend code never receives or decodes platform tokens.
+Supabase access and refresh credentials are stored only in distinct HttpOnly cookies. A login has an absolute 24-hour lifetime: short-lived Supabase access tokens are refreshed and rotated automatically, but refreshes never extend the original 24-hour deadline. State-changing browser requests require the signed double-submit CSRF token in `X-CSRF-Token` and pass exact Origin/Referer validation. Frontend code never receives or decodes platform tokens.
 
 Authorization evaluates platform role, active membership, effective permission and resource ownership. Tenant-sensitive queries resolve the event/client relationship before data access. Guest sessions and invitation tokens are opaque random secrets; only SHA-256 hashes are stored. Sensitive guest free text uses AES-256-GCM application-layer encryption when present.
 

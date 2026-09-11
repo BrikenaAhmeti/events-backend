@@ -14,6 +14,10 @@ import { PrismaService } from '../../../infrastructure/database/prisma.service';
 import { EmailProvider } from '../../../infrastructure/email/email.provider';
 import { AuditService } from '../../audit/application/audit.service';
 import { SupabaseAuthProvider, type AuthSession } from '../infrastructure/supabase-auth.provider';
+import {
+  PLATFORM_SESSION_TTL_MS,
+  PlatformSessionCookieService,
+} from './platform-session-cookie.service';
 
 const escapeHtml = (value: string) =>
   value.replace(
@@ -32,21 +36,30 @@ export class AuthService {
     private readonly config: ConfigService<Environment, true>,
     private readonly audit: AuditService,
     private readonly email: EmailProvider,
+    private readonly sessionCookies: PlatformSessionCookieService,
   ) {}
 
   async login(email: string, password: string, response: Response) {
     const session = await this.provider.login(email, password);
     const user = await this.resolveApplicationUser(session.access_token);
-    this.writeSession(response, session);
+    this.writeSession(response, session, Date.now() + PLATFORM_SESSION_TTL_MS);
     return this.toSafeUser(user);
   }
 
-  async refresh(refreshToken: string | undefined, response: Response): Promise<void> {
-    if (!refreshToken)
+  async refresh(refreshCookie: string | undefined, response: Response): Promise<void> {
+    const storedSession = refreshCookie ? this.sessionCookies.verify(refreshCookie) : null;
+    if (!storedSession || storedSession.expiresAt <= Date.now()) {
+      this.logout(response);
       throw new ApplicationError(401, 'SESSION_EXPIRED', 'Your session has expired.');
-    const session = await this.provider.refresh(refreshToken);
-    await this.resolveApplicationUser(session.access_token);
-    this.writeSession(response, session);
+    }
+    try {
+      const session = await this.provider.refresh(storedSession.refreshToken);
+      await this.resolveApplicationUser(session.access_token);
+      this.writeSession(response, session, storedSession.expiresAt);
+    } catch (error) {
+      this.logout(response);
+      throw error;
+    }
   }
 
   logout(response: Response): void {
@@ -102,7 +115,7 @@ export class AuthService {
       });
     }
     const user = await this.resolveApplicationUser(result.session.access_token);
-    this.writeSession(response, result.session);
+    this.writeSession(response, result.session, Date.now() + PLATFORM_SESSION_TTL_MS);
     return this.toSafeUser(user);
   }
 
@@ -190,15 +203,20 @@ export class AuthService {
     return user;
   }
 
-  private writeSession(response: Response, session: AuthSession): void {
+  private writeSession(response: Response, session: AuthSession, expiresAt: number): void {
+    const remainingSessionMs = Math.max(0, expiresAt - Date.now());
     response.cookie(PLATFORM_ACCESS_COOKIE, session.access_token, {
       ...this.cookieOptions(),
-      maxAge: session.expires_in * 1000,
+      maxAge: Math.min(session.expires_in * 1000, remainingSessionMs),
     });
-    response.cookie(PLATFORM_REFRESH_COOKIE, session.refresh_token, {
-      ...this.cookieOptions(),
-      maxAge: 30 * 24 * 60 * 60 * 1000,
-    });
+    response.cookie(
+      PLATFORM_REFRESH_COOKIE,
+      this.sessionCookies.issue(session.refresh_token, expiresAt),
+      {
+        ...this.cookieOptions(),
+        maxAge: remainingSessionMs,
+      },
+    );
   }
 
   private cookieOptions(): CookieOptions {

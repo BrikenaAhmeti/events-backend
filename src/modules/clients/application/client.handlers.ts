@@ -141,7 +141,14 @@ export class GetClientsHandler implements IQueryHandler<GetClientsQuery> {
       take: 21,
       ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
       orderBy: { id: 'asc' },
-      include: { _count: { select: { events: true, memberships: true } } },
+      include: {
+        _count: {
+          select: {
+            events: true,
+            memberships: { where: { role: 'CLIENT_STAFF' } },
+          },
+        },
+      },
     });
     const hasNextPage = records.length > 20;
     const items = records.slice(0, 20);
