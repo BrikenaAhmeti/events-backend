@@ -44,4 +44,55 @@ describe('EventSetupAnalysisService', () => {
         'Great — we’re setting up a new event for Northstar Events. Share everything you already know, or attach an event file, and I’ll organize the details for you.',
     });
   });
+
+  it('returns the conversational reply produced by the backend model with prior context', async () => {
+    const extractEventInformation = vi.fn().mockResolvedValue({
+      reply: 'I captured the venue. What dates and organizer contact should I add?',
+      event: { name: 'Leadership Forum', category: 'CONFERENCE', venue: 'Riverside Hall' },
+      facts: [],
+      schedule: [],
+    });
+    const completeness = {
+      evaluate: vi.fn().mockReturnValue({
+        score: 30,
+        ready: false,
+        missing: ['startAt'],
+        warnings: [],
+        recommendations: [],
+      }),
+    };
+    const service = new EventSetupAnalysisService(
+      {
+        client: { findUnique: vi.fn().mockResolvedValue({ name: 'Northstar Events' }) },
+      } as unknown as PrismaService,
+      new AuthorizationService(),
+      {} as FileValidationService,
+      {} as DocumentTextExtractorService,
+      { extractEventInformation } as unknown as AiProvider,
+      completeness as unknown as EventCompletenessService,
+    );
+
+    const result = await service.analyze(
+      actor,
+      {
+        clientId,
+        text: 'The venue is Riverside Hall.',
+        context: JSON.stringify({ event: { description: 'Annual leadership forum' } }),
+      },
+      undefined,
+      'request-a',
+    );
+
+    expect(extractEventInformation).toHaveBeenCalledWith(
+      expect.stringContaining('Latest event creator message:\nThe venue is Riverside Hall.'),
+      'request-a',
+    );
+    expect(extractEventInformation).toHaveBeenCalledWith(
+      expect.stringContaining('Previously reviewed event context:'),
+      'request-a',
+    );
+    expect(result.message).toBe(
+      'I captured the venue. What dates and organizer contact should I add?',
+    );
+  });
 });

@@ -18,6 +18,7 @@ import { Permission } from '../../memberships/domain/permission';
 const setupSchema = z.object({
   clientId: z.uuid(),
   text: z.string().trim().max(80_000).optional(),
+  context: z.string().trim().max(40_000).optional(),
 });
 const setupStartSchema = setupSchema.pick({ clientId: true });
 
@@ -77,8 +78,16 @@ export class EventSetupAnalysisService {
       const extension = file.originalname.toLowerCase().split('.').at(-1) ?? '';
       fileText = (await this.extractor.extract(extension, file.buffer)).text;
     }
-    const source = [input.text, fileText].filter(Boolean).join('\n\n').trim();
-    if (source.length < 10) {
+    const source = [
+      input.text ? `Latest event creator message:\n${input.text}` : '',
+      fileText ? `Attached event file content:\n${fileText}` : '',
+      input.context ? `Previously reviewed event context:\n${input.context}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n\n')
+      .trim();
+    const meaningfulSource = [input.text, fileText, input.context].filter(Boolean).join('').trim();
+    if (meaningfulSource.length < 10) {
       throw new ApplicationError(
         400,
         'EVENT_SOURCE_REQUIRED',
@@ -114,9 +123,11 @@ export class EventSetupAnalysisService {
       organizerEmail: event.organizerEmail ?? null,
     };
     return {
-      message: event.name
-        ? 'I’ve reviewed what you shared and organized it into the event details below.'
-        : 'I’ve reviewed what you shared and organized the details. I also suggested an event name for you to confirm.',
+      message:
+        extracted.reply?.trim() ||
+        (event.name
+          ? 'I’ve reviewed what you shared and organized it into the event details below. You can add more details or corrections here.'
+          : 'I’ve reviewed what you shared and organized the details. I also suggested an event name for you to confirm.'),
       event: { ...event, name: event.name ?? undefined },
       suggestedName,
       nameWasProvided: Boolean(event.name),

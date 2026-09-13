@@ -1,4 +1,5 @@
 export type EventExtractionCandidate = {
+  reply?: string;
   event?: {
     name?: string;
     category?: string;

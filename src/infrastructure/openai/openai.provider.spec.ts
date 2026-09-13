@@ -69,3 +69,40 @@ describe('OpenAiProvider streaming', () => {
     );
   });
 });
+
+describe('OpenAiProvider event setup', () => {
+  it('returns a structured conversational reply with the extracted event details', async () => {
+    openAi.create.mockClear();
+    openAi.create.mockResolvedValueOnce({
+      output_text: JSON.stringify({
+        reply: 'I captured the venue. What dates should I add?',
+        event: null,
+        facts: [],
+        schedule: [],
+      }),
+    });
+    const values: Record<string, string> = {
+      OPENAI_API_KEY: 'test-key',
+      OPENAI_MODEL: 'test-model',
+      PRODUCT_NAME: 'Feliam',
+    };
+    const config = {
+      get: (key: string) => values[key],
+    } as unknown as ConfigService<Environment, true>;
+    const provider = new OpenAiProvider(config);
+
+    const result = await provider.extractEventInformation('The venue is Riverside Hall.', 'request-a');
+
+    expect(result.reply).toBe('I captured the venue. What dates should I add?');
+    const request = openAi.create.mock.calls[0]?.[0] as unknown as {
+      model: string;
+      text: { format: { type: string; strict: boolean } };
+    };
+    const options = openAi.create.mock.calls[0]?.[1] as unknown as {
+      headers: Record<string, string>;
+    };
+    expect(request.model).toBe('test-model');
+    expect(request.text.format).toMatchObject({ type: 'json_schema', strict: true });
+    expect(options.headers).toEqual({ 'X-Client-Request-Id': 'request-a' });
+  });
+});
