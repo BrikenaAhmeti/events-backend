@@ -19,6 +19,7 @@ const setupSchema = z.object({
   clientId: z.uuid(),
   text: z.string().trim().max(80_000).optional(),
 });
+const setupStartSchema = setupSchema.pick({ clientId: true });
 
 const categoryLabels: Record<string, string> = {
   CORPORATE_INCENTIVE: 'Incentive Experience',
@@ -41,6 +42,21 @@ export class EventSetupAnalysisService {
     private readonly ai: AiProvider,
     private readonly completeness: EventCompletenessService,
   ) {}
+
+  async start(actor: AuthenticatedActor, body: unknown) {
+    const input = setupStartSchema.parse(body);
+    this.authorization.assert(actor, input.clientId, Permission.EVENT_CREATE);
+    const client = await this.prisma.client.findUnique({
+      where: { id: input.clientId },
+      select: { id: true, name: true },
+    });
+    if (!client) throw new ApplicationError(404, 'CLIENT_NOT_FOUND', 'Client not found.');
+    return {
+      clientId: client.id,
+      clientName: client.name,
+      message: `Great — we’re setting up a new event for ${client.name}. Share everything you already know, or attach an event file, and I’ll organize the details for you.`,
+    };
+  }
 
   async analyze(
     actor: AuthenticatedActor,
@@ -98,6 +114,9 @@ export class EventSetupAnalysisService {
       organizerEmail: event.organizerEmail ?? null,
     };
     return {
+      message: event.name
+        ? 'I’ve reviewed what you shared and organized it into the event details below.'
+        : 'I’ve reviewed what you shared and organized the details. I also suggested an event name for you to confirm.',
       event: { ...event, name: event.name ?? undefined },
       suggestedName,
       nameWasProvided: Boolean(event.name),

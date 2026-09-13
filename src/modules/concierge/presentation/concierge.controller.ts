@@ -38,6 +38,12 @@ export class ConciergeController {
     private readonly setupAnalysis: EventSetupAnalysisService,
   ) {}
 
+  @Post('events/setup/start')
+  startSetup(@CurrentActor() actor: AuthenticatedActor, @Body() body: unknown) {
+    this.rateLimits.assert(`concierge:setup-start:${actor.userId}`, 20, 60_000);
+    return this.setupAnalysis.start(actor, body);
+  }
+
   @Post('events/setup/analyze')
   @ApiConsumes('multipart/form-data')
   @UseInterceptors(FileInterceptor('file', { limits: { files: 1, fileSize: 20 * 1024 * 1024 } }))
