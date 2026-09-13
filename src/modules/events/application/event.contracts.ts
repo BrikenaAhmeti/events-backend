@@ -66,6 +66,7 @@ export const scheduleItemSchema = z.object({
 
 export const createEventSchema = z.object({
   clientId: z.uuid(),
+  setupSessionId: z.uuid().optional(),
   name: eventFields.name,
   category: eventFields.category,
   description: eventFields.description.optional(),

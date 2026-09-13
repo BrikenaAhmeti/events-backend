@@ -73,8 +73,15 @@ enum InvitationType {
 }
 
 enum ConversationType {
+  EVENT_SETUP
   ORGANIZER
   GUEST
+}
+
+enum ConversationState {
+  ACTIVE
+  COMPLETED
+  ARCHIVED
 }
 
 enum MessageRole {
@@ -340,30 +347,34 @@ model GuestSession {
 }
 
 model Document {
-  id               String              @id @default(uuid()) @db.Uuid
-  clientId         String              @db.Uuid
-  eventId          String              @db.Uuid
-  uploadedByUserId String              @db.Uuid
-  originalName     String
-  objectKey        String              @unique
-  bucket           String
-  mimeType         String
-  size             Int
-  checksum         String
-  processingStatus ProcessingStatus    @default(PENDING)
-  processingError  String?
-  parserVersion    String?
-  event            Event               @relation(fields: [eventId], references: [id], onDelete: Cascade)
-  uploadedBy       User                @relation(fields: [uploadedByUserId], references: [id])
-  extraction       DocumentExtraction?
-  chunks           DocumentChunk[]
-  facts            EventFact[]
-  createdAt        DateTime            @default(now()) @db.Timestamptz(3)
-  updatedAt        DateTime            @updatedAt @db.Timestamptz(3)
+  id                  String              @id @default(uuid()) @db.Uuid
+  clientId            String              @db.Uuid
+  eventId             String?             @db.Uuid
+  setupConversationId String?             @db.Uuid
+  uploadedByUserId    String              @db.Uuid
+  originalName        String
+  objectKey           String              @unique
+  bucket              String
+  mimeType            String
+  size                Int
+  checksum            String
+  processingStatus    ProcessingStatus    @default(PENDING)
+  processingError     String?
+  parserVersion       String?
+  event               Event?              @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  setupConversation   Conversation?       @relation("SetupDocuments", fields: [setupConversationId], references: [id], onDelete: Cascade)
+  uploadedBy          User                @relation(fields: [uploadedByUserId], references: [id])
+  extraction          DocumentExtraction?
+  chunks              DocumentChunk[]
+  facts               EventFact[]
+  createdAt           DateTime            @default(now()) @db.Timestamptz(3)
+  updatedAt           DateTime            @updatedAt @db.Timestamptz(3)
 
   @@unique([eventId, checksum])
+  @@unique([setupConversationId, checksum])
   @@index([eventId, processingStatus])
   @@index([clientId, eventId])
+  @@index([setupConversationId])
 }
 
 model DocumentExtraction {
@@ -411,21 +422,26 @@ model KnowledgeEntry {
 }
 
 model Conversation {
-  id        String                @id @default(uuid()) @db.Uuid
-  clientId  String                @db.Uuid
-  eventId   String                @db.Uuid
-  userId    String?               @db.Uuid
-  guestId   String?               @db.Uuid
-  type      ConversationType
-  event     Event                 @relation(fields: [eventId], references: [id], onDelete: Cascade)
-  user      User?                 @relation(fields: [userId], references: [id], onDelete: SetNull)
-  guest     Guest?                @relation(fields: [guestId], references: [id], onDelete: SetNull)
-  messages  ConversationMessage[]
-  createdAt DateTime              @default(now()) @db.Timestamptz(3)
-  updatedAt DateTime              @updatedAt @db.Timestamptz(3)
+  id             String                @id @default(uuid()) @db.Uuid
+  clientId       String                @db.Uuid
+  eventId        String?               @db.Uuid
+  userId         String?               @db.Uuid
+  guestId        String?               @db.Uuid
+  type           ConversationType
+  state          ConversationState     @default(ACTIVE)
+  draft          Json                  @default("{}")
+  completedAt    DateTime?             @db.Timestamptz(3)
+  event          Event?                @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  user           User?                 @relation(fields: [userId], references: [id], onDelete: SetNull)
+  guest          Guest?                @relation(fields: [guestId], references: [id], onDelete: SetNull)
+  messages       ConversationMessage[]
+  setupDocuments Document[]            @relation("SetupDocuments")
+  createdAt      DateTime              @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime              @updatedAt @db.Timestamptz(3)
 
   @@index([eventId, createdAt])
   @@index([guestId])
+  @@index([userId, clientId, type, state, updatedAt])
 }
 
 model ConversationMessage {

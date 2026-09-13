@@ -42,6 +42,20 @@ const readyEvent = {
   status: 'READY',
 };
 
+const readyInput = {
+  clientId: 'client-a',
+  name: 'Leadership Forum',
+  category: 'CONFERENCE',
+  description: 'A fictional leadership conference.',
+  destination: 'Lisbon',
+  venue: 'Riverside Hall',
+  startAt: '2027-10-12T08:00:00.000Z',
+  endAt: '2027-10-14T18:00:00.000Z',
+  timezone: 'Europe/Lisbon',
+  organizerName: 'Northstar Events',
+  organizerEmail: 'events@example.test',
+};
+
 describe('CreateEventDraftHandler', () => {
   it('persists reviewed facts and schedule items in the event transaction', async () => {
     const databaseTransaction = {
@@ -67,9 +81,7 @@ describe('CreateEventDraftHandler', () => {
 
     await handler.execute(
       new CreateEventDraftCommand(actor, 'request-a', {
-        clientId: 'client-a',
-        name: 'Leadership Forum',
-        category: 'CONFERENCE',
+        ...readyInput,
         facts: [{ key: 'dress_code', value: 'Business casual', confidence: 0.95 }],
         schedule: [
           {
@@ -133,9 +145,8 @@ describe('CreateEventDraftHandler', () => {
 
     await handler.execute(
       new CreateEventDraftCommand(platformAdministrator, 'request-b', {
+        ...readyInput,
         clientId: 'client-b',
-        name: 'Leadership Forum',
-        category: 'CONFERENCE',
       }),
     );
 
@@ -148,6 +159,73 @@ describe('CreateEventDraftHandler', () => {
       clientId: 'client-b',
       eventId: 'event-b',
     });
+  });
+
+  it('does not create an event while mandatory details are missing', async () => {
+    const transaction = vi.fn();
+    const handler = new CreateEventDraftHandler(
+      { $transaction: transaction } as unknown as PrismaService,
+      new AuthorizationService(),
+      new EventCompletenessService(),
+    );
+
+    await expect(
+      handler.execute(
+        new CreateEventDraftCommand(actor, 'request-incomplete', {
+          clientId: 'client-a',
+          name: 'Leadership Forum',
+          category: 'CONFERENCE',
+        }),
+      ),
+    ).rejects.toMatchObject({ code: 'EVENT_VALIDATION_FAILED' });
+    expect(transaction).not.toHaveBeenCalled();
+  });
+
+  it('promotes setup files into the event knowledge pipeline and completes the hidden setup chat', async () => {
+    const databaseTransaction = {
+      event: { create: vi.fn().mockResolvedValue(readyEvent) },
+      eventFact: { createMany: vi.fn() },
+      scheduleItem: { createMany: vi.fn() },
+      document: {
+        findMany: vi.fn().mockResolvedValue([{ id: 'document-a' }]),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
+      backgroundJob: { upsert: vi.fn().mockResolvedValue({ id: 'job-a' }) },
+      conversation: { update: vi.fn().mockResolvedValue({ id: 'setup-a' }) },
+      auditLog: { create: vi.fn().mockResolvedValue({ id: 'audit-a' }) },
+    };
+    const prisma = {
+      conversation: { findFirst: vi.fn().mockResolvedValue({ id: 'setup-a' }) },
+      $transaction: vi.fn((work: (transaction: typeof databaseTransaction) => unknown) =>
+        work(databaseTransaction),
+      ),
+    } as unknown as PrismaService;
+    const handler = new CreateEventDraftHandler(
+      prisma,
+      new AuthorizationService(),
+      new EventCompletenessService(),
+    );
+
+    await handler.execute(
+      new CreateEventDraftCommand(actor, 'request-setup', {
+        ...readyInput,
+        setupSessionId: '9f47fbca-c63c-4ea0-af61-c74390c238b8',
+      }),
+    );
+
+    expect(databaseTransaction.document.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: { eventId: readyEvent.id, processingStatus: 'QUEUED' },
+      }),
+    );
+    const jobInput = databaseTransaction.backgroundJob.upsert.mock.calls[0]?.[0] as unknown as {
+      create: { type: string; eventId: string };
+    };
+    expect(jobInput.create).toMatchObject({ type: 'DOCUMENT_PROCESS', eventId: readyEvent.id });
+    const conversationInput = databaseTransaction.conversation.update.mock.calls[0]?.[0] as unknown as {
+      data: { eventId: string; state: string };
+    };
+    expect(conversationInput.data).toMatchObject({ eventId: readyEvent.id, state: 'COMPLETED' });
   });
 });
 

@@ -135,11 +135,10 @@ export class ConciergeService {
       status: 'PROCESSING',
     });
     try {
-      let semantic: Array<{ content: string }> = [];
-      if (this.needsSemanticContext(input.question)) {
-        const [embedding] = await this.ai.embed([input.question]);
-        semantic = embedding ? await this.knowledge.semanticSearch(input.event.id, embedding) : [];
-      }
+      const [embedding] = await this.ai.embed([input.question]);
+      const semantic = embedding
+        ? await this.knowledge.semanticSearch(input.event.id, embedding)
+        : [];
       const response = await this.ai.answerStream(
         {
           audience: input.audience,
@@ -232,7 +231,13 @@ export class ConciergeService {
     guestId?: string,
   ) {
     const existing = await this.prisma.conversation.findFirst({
-      where: { eventId: event.id, type, userId: userId ?? null, guestId: guestId ?? null },
+      where: {
+        eventId: event.id,
+        type,
+        state: 'ACTIVE',
+        userId: userId ?? null,
+        guestId: guestId ?? null,
+      },
       orderBy: { createdAt: 'desc' },
     });
     return (
@@ -250,7 +255,13 @@ export class ConciergeService {
     guestId?: string,
   ) {
     const conversation = await this.prisma.conversation.findFirst({
-      where: { eventId, type, userId: userId ?? null, guestId: guestId ?? null },
+      where: {
+        eventId,
+        type,
+        state: 'ACTIVE',
+        userId: userId ?? null,
+        guestId: guestId ?? null,
+      },
       orderBy: { createdAt: 'desc' },
       select: {
         id: true,
@@ -278,12 +289,6 @@ export class ConciergeService {
     )?.role === 'CLIENT_ADMIN'
       ? 'CLIENT_ADMIN'
       : 'CLIENT_STAFF';
-  }
-
-  private needsSemanticContext(question: string): boolean {
-    return !/\b(when|time|today|tonight|tomorrow|contact|phone|email|schedule|next)\b/i.test(
-      question,
-    );
   }
 
   private structuredContext(

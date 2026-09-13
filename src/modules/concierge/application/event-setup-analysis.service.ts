@@ -1,9 +1,12 @@
 import { Injectable } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
+import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { ApplicationError } from '../../../common/errors/application.error';
 import type { AuthenticatedActor } from '../../../common/types/request.types';
-import { AiProvider } from '../../../infrastructure/openai/ai.provider';
 import { PrismaService } from '../../../infrastructure/database/prisma.service';
+import { AiProvider } from '../../../infrastructure/openai/ai.provider';
+import { FileStorage } from '../../../infrastructure/storage/file-storage';
 import { DocumentTextExtractorService } from '../../documents/application/document-text-extractor.service';
 import { FileValidationService } from '../../documents/application/file-validation.service';
 import {
@@ -17,10 +20,22 @@ import { Permission } from '../../memberships/domain/permission';
 
 const setupSchema = z.object({
   clientId: z.uuid(),
+  sessionId: z.uuid(),
   text: z.string().trim().max(80_000).optional(),
-  context: z.string().trim().max(40_000).optional(),
 });
-const setupStartSchema = setupSchema.pick({ clientId: true });
+const setupStartSchema = z.object({
+  clientId: z.uuid(),
+  restart: z.boolean().optional().default(false),
+});
+const setupDraftSchema = z.object({
+  event: updateEventSchema.default({}),
+  facts: z.array(eventFactInputSchema).max(200).default([]),
+  schedule: z.array(scheduleItemSchema).max(200).default([]),
+  suggestedName: z.string().max(160).default(''),
+  nameWasProvided: z.boolean().default(false),
+});
+
+type SetupDraft = z.infer<typeof setupDraftSchema>;
 
 const categoryLabels: Record<string, string> = {
   CORPORATE_INCENTIVE: 'Incentive Experience',
@@ -33,6 +48,18 @@ const categoryLabels: Record<string, string> = {
   OTHER: 'Special Event',
 };
 
+const missingLabels: Record<string, string> = {
+  name: 'the event name',
+  category: 'the event type',
+  description: 'the event purpose and description',
+  location: 'the destination or venue',
+  startAt: 'the event start date and time',
+  endAt: 'the event end date and time',
+  timezone: 'the event timezone',
+  organizerName: 'the organizer name',
+  organizerEmail: 'the organizer email',
+};
+
 @Injectable()
 export class EventSetupAnalysisService {
   constructor(
@@ -42,6 +69,7 @@ export class EventSetupAnalysisService {
     private readonly extractor: DocumentTextExtractorService,
     private readonly ai: AiProvider,
     private readonly completeness: EventCompletenessService,
+    private readonly storage: FileStorage,
   ) {}
 
   async start(actor: AuthenticatedActor, body: unknown) {
@@ -52,10 +80,74 @@ export class EventSetupAnalysisService {
       select: { id: true, name: true },
     });
     if (!client) throw new ApplicationError(404, 'CLIENT_NOT_FOUND', 'Client not found.');
+
+    if (input.restart) {
+      await this.prisma.conversation.updateMany({
+        where: {
+          clientId: client.id,
+          userId: actor.userId,
+          type: 'EVENT_SETUP',
+          state: 'ACTIVE',
+          eventId: null,
+        },
+        data: { state: 'ARCHIVED', completedAt: new Date() },
+      });
+    }
+
+    let session = input.restart
+      ? null
+      : await this.prisma.conversation.findFirst({
+          where: {
+            clientId: client.id,
+            userId: actor.userId,
+            type: 'EVENT_SETUP',
+            state: 'ACTIVE',
+            eventId: null,
+          },
+          orderBy: { updatedAt: 'desc' },
+          include: {
+            messages: { orderBy: { createdAt: 'asc' }, take: 100 },
+            setupDocuments: {
+              orderBy: { createdAt: 'asc' },
+              select: { id: true, originalName: true, size: true },
+            },
+          },
+        });
+    const resumed = Boolean(session);
+    if (!session) {
+      const welcome = `Let’s set up a new event for ${client.name}. Would you like to describe the event step by step, attach an event file, or use both? I’ll review what you provide and ask for any mandatory details that are still missing.`;
+      session = await this.prisma.conversation.create({
+        data: {
+          clientId: client.id,
+          userId: actor.userId,
+          type: 'EVENT_SETUP',
+          messages: {
+            create: { role: 'CONCIERGE', content: welcome, status: 'COMPLETE' },
+          },
+        },
+        include: {
+          messages: { orderBy: { createdAt: 'asc' }, take: 100 },
+          setupDocuments: {
+            orderBy: { createdAt: 'asc' },
+            select: { id: true, originalName: true, size: true },
+          },
+        },
+      });
+    }
     return {
+      sessionId: session.id,
       clientId: client.id,
       clientName: client.name,
-      message: `Great — we’re setting up a new event for ${client.name}. Share everything you already know, or attach an event file, and I’ll organize the details for you.`,
+      resumed,
+      messages: session.messages.map((message) => ({
+        id: message.id,
+        role: message.role,
+        content: message.content,
+        metadata: message.metadata,
+        createdAt: message.createdAt,
+      })),
+      documents: session.setupDocuments,
+      draft: this.readDraft(session.draft),
     };
   }
 
@@ -67,26 +159,42 @@ export class EventSetupAnalysisService {
   ) {
     const input = setupSchema.parse(body);
     this.authorization.assert(actor, input.clientId, Permission.EVENT_CREATE);
+    const session = await this.prisma.conversation.findFirst({
+      where: {
+        id: input.sessionId,
+        clientId: input.clientId,
+        userId: actor.userId,
+        type: 'EVENT_SETUP',
+        state: 'ACTIVE',
+        eventId: null,
+      },
+      include: {
+        setupDocuments: { include: { extraction: true } },
+        messages: { orderBy: { createdAt: 'desc' }, take: 20 },
+      },
+    });
+    if (!session)
+      throw new ApplicationError(
+        404,
+        'EVENT_SETUP_NOT_FOUND',
+        'This event setup is no longer active. Start a new conversation to continue.',
+      );
     const client = await this.prisma.client.findUnique({
       where: { id: input.clientId },
       select: { name: true },
     });
     if (!client) throw new ApplicationError(404, 'CLIENT_NOT_FOUND', 'Client not found.');
+
     let fileText = '';
+    let savedFile: { id: string; name: string; size: number } | null = null;
+    let fileExtension = '';
+    let extractedFile: { text: string; metadata: Record<string, number | string> } | undefined;
     if (file) {
-      this.validation.validate(file);
-      const extension = file.originalname.toLowerCase().split('.').at(-1) ?? '';
-      fileText = (await this.extractor.extract(extension, file.buffer)).text;
+      fileExtension = this.validation.validate(file);
+      extractedFile = await this.extractor.extract(fileExtension, file.buffer);
+      fileText = extractedFile.text;
     }
-    const source = [
-      input.text ? `Latest event creator message:\n${input.text}` : '',
-      fileText ? `Attached event file content:\n${fileText}` : '',
-      input.context ? `Previously reviewed event context:\n${input.context}` : '',
-    ]
-      .filter(Boolean)
-      .join('\n\n')
-      .trim();
-    const meaningfulSource = [input.text, fileText, input.context].filter(Boolean).join('').trim();
+    const meaningfulSource = [input.text, fileText].filter(Boolean).join('').trim();
     if (meaningfulSource.length < 10) {
       throw new ApplicationError(
         400,
@@ -94,21 +202,62 @@ export class EventSetupAnalysisService {
         'Describe the event or attach an event file to continue.',
       );
     }
+    if (file && extractedFile) {
+      savedFile = await this.saveSetupDocument(
+        actor,
+        session.id,
+        input.clientId,
+        file,
+        fileExtension,
+        extractedFile,
+        requestId,
+      );
+    }
+
+    const userMessage = await this.prisma.conversationMessage.create({
+      data: {
+        conversationId: session.id,
+        role: 'USER',
+        content: input.text || `Attached event file: ${file?.originalname ?? 'event document'}`,
+        status: 'COMPLETE',
+        metadata: savedFile ? { documentId: savedFile.id, fileName: savedFile.name } : {},
+      },
+    });
+    const previous = this.readDraft(session.draft);
+    const recentConversation = [...(session.messages ?? [])]
+      .reverse()
+      .map(
+        (message) =>
+          `${message.role === 'USER' ? 'Event creator' : 'Concierge'}: ${message.content}`,
+      )
+      .join('\n');
+    const source = [
+      `Previously confirmed event setup state:\n${JSON.stringify(previous)}`,
+      recentConversation ? `Recent setup conversation:\n${recentConversation}` : '',
+      input.text ? `Latest event creator message:\n${input.text}` : '',
+      fileText ? `Attached event file content:\n${fileText}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n\n')
+      .trim();
     const extracted = await this.ai.extractEventInformation(source, requestId);
     const parsed = updateEventSchema.safeParse(extracted.event ?? {});
-    const event = parsed.success ? parsed.data : {};
-    const facts = extracted.facts.flatMap((fact) => {
+    const event = this.mergeEvent(previous.event, parsed.success ? parsed.data : {});
+    const extractedFacts = extracted.facts.flatMap((fact) => {
       const result = eventFactInputSchema.safeParse(fact);
       return result.success ? [result.data] : [];
     });
-    const schedule = extracted.schedule.flatMap((item) => {
+    const extractedSchedule = extracted.schedule.flatMap((item) => {
       const result = scheduleItemSchema.safeParse(item);
       return result.success ? [result.data] : [];
     });
-    const suggestedName = event.name ?? this.suggestName(event, client.name);
+    const facts = this.mergeFacts(previous.facts, extractedFacts);
+    const schedule = this.mergeSchedule(previous.schedule, extractedSchedule);
+    const suggestedName =
+      event.name ?? (previous.suggestedName || this.suggestName(event, client.name));
     const projected = {
-      name: suggestedName,
-      category: event.category ?? 'OTHER',
+      name: event.name ?? null,
+      category: event.category ?? null,
       description: event.description ?? null,
       destination: event.destination ?? null,
       venue: event.venue ?? null,
@@ -122,22 +271,140 @@ export class EventSetupAnalysisService {
       organizerName: event.organizerName ?? null,
       organizerEmail: event.organizerEmail ?? null,
     };
+    const completeness = this.completeness.evaluate(projected);
+    const draft: SetupDraft = {
+      event,
+      suggestedName,
+      nameWasProvided: Boolean(event.name),
+      facts,
+      schedule,
+    };
+    let message =
+      extracted.reply?.trim() ||
+      'I reviewed what you provided and organized the event details available so far.';
+    if (!completeness.ready && !message.includes('?')) {
+      const next = missingLabels[completeness.missing[0] ?? ''] ?? 'the next missing event detail';
+      message = `${message} What should I add for ${next}?`;
+    }
+    const assistantMessage = await this.prisma.$transaction(async (transaction) => {
+      await transaction.conversation.update({
+        where: { id: session.id },
+        data: { draft: JSON.parse(JSON.stringify(draft)) as Prisma.InputJsonValue },
+      });
+      return transaction.conversationMessage.create({
+        data: {
+          conversationId: session.id,
+          role: 'CONCIERGE',
+          content: message,
+          status: 'COMPLETE',
+        },
+      });
+    });
     return {
-      message:
-        extracted.reply?.trim() ||
-        (event.name
-          ? 'I’ve reviewed what you shared and organized it into the event details below. You can add more details or corrections here.'
-          : 'I’ve reviewed what you shared and organized the details. I also suggested an event name for you to confirm.'),
+      sessionId: session.id,
+      message,
+      messages: [userMessage, assistantMessage],
       event: { ...event, name: event.name ?? undefined },
       suggestedName,
       nameWasProvided: Boolean(event.name),
-      completeness: this.completeness.evaluate(projected),
+      completeness,
       facts,
       schedule,
       extractedFacts: facts.length,
       extractedScheduleItems: schedule.length,
-      file: file ? { name: file.originalname, size: file.size } : null,
+      file: savedFile,
     };
+  }
+
+  private readDraft(value: unknown): SetupDraft {
+    const parsed = setupDraftSchema.safeParse(value);
+    return parsed.success
+      ? parsed.data
+      : { event: {}, facts: [], schedule: [], suggestedName: '', nameWasProvided: false };
+  }
+
+  private mergeEvent(previous: SetupDraft['event'], next: SetupDraft['event']) {
+    const merged = { ...previous };
+    for (const [key, value] of Object.entries(next)) {
+      if (value !== undefined && value !== null && value !== '')
+        Object.assign(merged, { [key]: value });
+    }
+    return merged;
+  }
+
+  private mergeFacts(previous: SetupDraft['facts'], next: SetupDraft['facts']) {
+    const facts = new Map(previous.map((fact) => [fact.key.toLowerCase(), fact]));
+    for (const fact of next) facts.set(fact.key.toLowerCase(), fact);
+    return [...facts.values()].slice(0, 200);
+  }
+
+  private mergeSchedule(previous: SetupDraft['schedule'], next: SetupDraft['schedule']) {
+    const schedule = new Map(
+      previous.map((item) => [`${item.title.toLowerCase()}|${item.startAt}`, item]),
+    );
+    for (const item of next) schedule.set(`${item.title.toLowerCase()}|${item.startAt}`, item);
+    return [...schedule.values()].slice(0, 200);
+  }
+
+  private async saveSetupDocument(
+    actor: AuthenticatedActor,
+    sessionId: string,
+    clientId: string,
+    file: Express.Multer.File,
+    extension: string,
+    extracted: { text: string; metadata: Record<string, number | string> },
+    requestId: string,
+  ) {
+    const checksum = createHash('sha256').update(file.buffer).digest('hex');
+    const duplicate = await this.prisma.document.findUnique({
+      where: { setupConversationId_checksum: { setupConversationId: sessionId, checksum } },
+    });
+    if (duplicate)
+      return { id: duplicate.id, name: duplicate.originalName, size: duplicate.size };
+
+    const objectKey = `clients/${clientId}/event-setups/${sessionId}/documents/${randomUUID()}.${extension}`;
+    const stored = await this.storage.upload(objectKey, file.buffer, file.mimetype);
+    try {
+      const document = await this.prisma.$transaction(async (transaction) => {
+        const created = await transaction.document.create({
+          data: {
+            clientId,
+            setupConversationId: sessionId,
+            uploadedByUserId: actor.userId,
+            originalName: file.originalname.slice(0, 255),
+            objectKey: stored.objectKey,
+            bucket: stored.bucket,
+            mimeType: file.mimetype,
+            size: file.size,
+            checksum,
+            processingStatus: 'PENDING',
+            extraction: {
+              create: {
+                extractedText: extracted.text,
+                parserVersion: '1.0.0',
+                extractionMetadata: extracted.metadata,
+              },
+            },
+          },
+        });
+        await transaction.auditLog.create({
+          data: {
+            actorUserId: actor.userId,
+            clientId,
+            action: 'EVENT_SETUP_DOCUMENT_SAVED',
+            entityType: 'Document',
+            entityId: created.id,
+            requestId,
+            metadata: { sessionId },
+          },
+        });
+        return created;
+      });
+      return { id: document.id, name: document.originalName, size: document.size };
+    } catch (error) {
+      await this.storage.delete(objectKey).catch(() => undefined);
+      throw error;
+    }
   }
 
   private suggestName(event: Record<string, unknown>, clientName: string): string {

@@ -50,7 +50,50 @@ export class CreateEventDraftHandler implements ICommandHandler<CreateEventDraft
 
   async execute({ actor, input, requestId }: CreateEventDraftCommand) {
     this.authorization.assert(actor, input.clientId, Permission.EVENT_CREATE);
-    const { facts = [], schedule = [], ...eventInput } = input;
+    const { facts = [], schedule = [], setupSessionId, ...eventInput } = input;
+    const projected = {
+      ...eventInput,
+      description: eventInput.description ?? null,
+      destination: eventInput.destination ?? null,
+      venue: eventInput.venue ?? null,
+      venueAddress: eventInput.venueAddress ?? null,
+      venueDetails: eventInput.venueDetails ?? null,
+      restroomInformation: eventInput.restroomInformation ?? null,
+      accessibilityInformation: eventInput.accessibilityInformation ?? null,
+      startAt: eventInput.startAt ? new Date(eventInput.startAt) : null,
+      endAt: eventInput.endAt ? new Date(eventInput.endAt) : null,
+      timezone: eventInput.timezone ?? null,
+      organizerName: eventInput.organizerName ?? null,
+      organizerEmail: eventInput.organizerEmail ?? null,
+    };
+    const eventCompleteness = this.completeness.evaluate(projected);
+    if (!eventCompleteness.ready) {
+      throw new ApplicationError(
+        400,
+        'EVENT_VALIDATION_FAILED',
+        'Complete all mandatory event information before creating the event.',
+        eventCompleteness,
+      );
+    }
+    if (setupSessionId) {
+      const setup = await this.prisma.conversation.findFirst({
+        where: {
+          id: setupSessionId,
+          clientId: input.clientId,
+          userId: actor.userId,
+          type: 'EVENT_SETUP',
+          state: 'ACTIVE',
+          eventId: null,
+        },
+        select: { id: true },
+      });
+      if (!setup)
+        throw new ApplicationError(
+          409,
+          'EVENT_SETUP_NOT_ACTIVE',
+          'This setup conversation is no longer active. Start a new event setup.',
+        );
+    }
     const event = await this.prisma.$transaction(async (transaction) => {
       const created = await transaction.event.create({
         data: {
@@ -59,6 +102,7 @@ export class CreateEventDraftHandler implements ICommandHandler<CreateEventDraft
           endAt: eventInput.endAt ? new Date(eventInput.endAt) : undefined,
           slug: slugify(eventInput.name),
           createdByUserId: actor.userId,
+          status: 'READY',
         },
       });
       if (facts.length > 0) {
@@ -88,6 +132,37 @@ export class CreateEventDraftHandler implements ICommandHandler<CreateEventDraft
           })),
         });
       }
+      let setupDocumentCount = 0;
+      if (setupSessionId) {
+        const setupDocuments = await transaction.document.findMany({
+          where: { setupConversationId: setupSessionId, eventId: null },
+          select: { id: true },
+        });
+        setupDocumentCount = setupDocuments.length;
+        if (setupDocuments.length > 0) {
+          await transaction.document.updateMany({
+            where: { id: { in: setupDocuments.map(({ id }) => id) } },
+            data: { eventId: created.id, processingStatus: 'QUEUED' },
+          });
+          for (const document of setupDocuments) {
+            await transaction.backgroundJob.upsert({
+              where: { idempotencyKey: `document:${document.id}:v1` },
+              create: {
+                type: 'DOCUMENT_PROCESS',
+                idempotencyKey: `document:${document.id}:v1`,
+                clientId: input.clientId,
+                eventId: created.id,
+                payload: { documentId: document.id, requestId },
+              },
+              update: {},
+            });
+          }
+        }
+        await transaction.conversation.update({
+          where: { id: setupSessionId },
+          data: { eventId: created.id, state: 'COMPLETED', completedAt: new Date() },
+        });
+      }
       await transaction.auditLog.create({
         data: {
           actorUserId: actor.userId,
@@ -97,12 +172,17 @@ export class CreateEventDraftHandler implements ICommandHandler<CreateEventDraft
           entityType: 'Event',
           entityId: created.id,
           requestId,
-          metadata: { extractedFacts: facts.length, extractedScheduleItems: schedule.length },
+          metadata: {
+            extractedFacts: facts.length,
+            extractedScheduleItems: schedule.length,
+            setupSessionId,
+            setupDocumentCount,
+          },
         },
       });
       return created;
     });
-    return { ...event, completeness: this.completeness.evaluate(event) };
+    return { ...event, completeness: eventCompleteness };
   }
 }
 

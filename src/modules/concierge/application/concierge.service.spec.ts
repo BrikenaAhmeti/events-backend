@@ -39,15 +39,20 @@ describe('ConciergeService streaming', () => {
       conversation: { findFirst: vi.fn().mockResolvedValue({ id: 'conversation-a' }) },
       conversationMessage: { create: createMessage },
     } as unknown as PrismaService;
+    const answerStream = vi.fn((_: unknown, onDelta: (delta: string) => void) => {
+      onDelta('Doors open ');
+      onDelta('at 08:00.');
+      return Promise.resolve({
+        answer: 'Doors open at 08:00.',
+        usage: { outputTokens: 8 },
+      });
+    });
+    const semanticSearch = vi.fn().mockResolvedValue([
+      { content: 'The event file says doors open at 08:00.' },
+    ]);
     const ai = {
-      answerStream: vi.fn((_: unknown, onDelta: (delta: string) => void) => {
-        onDelta('Doors open ');
-        onDelta('at 08:00.');
-        return Promise.resolve({
-          answer: 'Doors open at 08:00.',
-          usage: { outputTokens: 8 },
-        });
-      }),
+      embed: vi.fn().mockResolvedValue([[0.1, 0.2]]),
+      answerStream,
     } as unknown as AiProvider;
     const actor: AuthenticatedActor = {
       userId: 'user-a',
@@ -61,7 +66,7 @@ describe('ConciergeService streaming', () => {
     const service = new ConciergeService(
       prisma,
       ai,
-      {} as EventKnowledgeRepository,
+      { semanticSearch } as unknown as EventKnowledgeRepository,
       new AuthorizationService(),
       {} as FieldEncryptionService,
     );
@@ -77,6 +82,10 @@ describe('ConciergeService streaming', () => {
 
     expect(streamed.map(({ type }) => type)).toEqual(['status', 'delta', 'delta', 'message']);
     expect(result.message.content).toBe('Doors open at 08:00.');
+    expect(semanticSearch).toHaveBeenCalledWith(event.id, [0.1, 0.2]);
+    expect(answerStream.mock.calls[0]?.[0]).toMatchObject({
+      untrustedDocumentContext: 'The event file says doors open at 08:00.',
+    });
     expect(createMessage.mock.calls.at(-1)?.[0].data).toMatchObject({
       role: 'CONCIERGE',
       content: 'Doors open at 08:00.',

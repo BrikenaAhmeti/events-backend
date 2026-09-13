@@ -1,6 +1,7 @@
 import type { AuthenticatedActor } from '../../../common/types/request.types';
 import type { PrismaService } from '../../../infrastructure/database/prisma.service';
 import type { AiProvider } from '../../../infrastructure/openai/ai.provider';
+import type { FileStorage } from '../../../infrastructure/storage/file-storage';
 import type { DocumentTextExtractorService } from '../../documents/application/document-text-extractor.service';
 import type { FileValidationService } from '../../documents/application/file-validation.service';
 import type { EventCompletenessService } from '../../events/domain/event-completeness.service';
@@ -8,6 +9,7 @@ import { AuthorizationService } from '../../memberships/application/authorizatio
 import { EventSetupAnalysisService } from './event-setup-analysis.service';
 
 const clientId = '7f24fbca-c63c-4ea0-af61-c74390c238b9';
+const sessionId = '9f47fbca-c63c-4ea0-af61-c74390c238b8';
 
 const actor: AuthenticatedActor = {
   userId: 'platform-admin',
@@ -20,79 +22,256 @@ const actor: AuthenticatedActor = {
 };
 
 describe('EventSetupAnalysisService', () => {
-  it('validates the selected client and returns the next setup message', async () => {
+  it('starts a persisted setup conversation and offers file or step-by-step entry', async () => {
     const findUnique = vi.fn().mockResolvedValue({ id: clientId, name: 'Northstar Events' });
+    const createConversation = vi.fn().mockResolvedValue({
+      id: sessionId,
+      draft: {},
+      setupDocuments: [],
+      messages: [
+        {
+          id: 'welcome-a',
+          role: 'CONCIERGE',
+          content:
+            'Let’s set up a new event for Northstar Events. Would you like to describe the event step by step, attach an event file, or use both? I’ll review what you provide and ask for any mandatory details that are still missing.',
+          metadata: {},
+          createdAt: new Date('2027-01-01T10:00:00Z'),
+        },
+      ],
+    });
     const service = new EventSetupAnalysisService(
-      { client: { findUnique } } as unknown as PrismaService,
+      {
+        client: { findUnique },
+        conversation: { findFirst: vi.fn().mockResolvedValue(null), create: createConversation },
+      } as unknown as PrismaService,
       new AuthorizationService(),
       {} as FileValidationService,
       {} as DocumentTextExtractorService,
       {} as AiProvider,
       {} as EventCompletenessService,
+      {} as FileStorage,
     );
 
     const result = await service.start(actor, { clientId });
 
-    expect(findUnique).toHaveBeenCalledWith({
-      where: { id: clientId },
-      select: { id: true, name: true },
-    });
-    expect(result).toEqual({
-      clientId,
-      clientName: 'Northstar Events',
-      message:
-        'Great — we’re setting up a new event for Northstar Events. Share everything you already know, or attach an event file, and I’ll organize the details for you.',
-    });
+    expect(result.sessionId).toBe(sessionId);
+    expect(result.resumed).toBe(false);
+    expect(result.messages[0]?.content).toContain('attach an event file');
+    const createInput = createConversation.mock.calls[0]?.[0] as unknown as {
+      data: { type: string; userId: string };
+    };
+    expect(createInput.data.type).toBe('EVENT_SETUP');
+    expect(createInput.data.userId).toBe(actor.userId);
   });
 
-  it('returns the conversational reply produced by the backend model with prior context', async () => {
+  it('resumes the active setup and archives it when a new chat is requested', async () => {
+    const updateMany = vi.fn().mockResolvedValue({ count: 1 });
+    const create = vi.fn().mockResolvedValue({
+      id: sessionId,
+      draft: {},
+      setupDocuments: [],
+      messages: [],
+    });
+    const service = new EventSetupAnalysisService(
+      {
+        client: {
+          findUnique: vi.fn().mockResolvedValue({ id: clientId, name: 'Northstar Events' }),
+        },
+        conversation: { updateMany, create },
+      } as unknown as PrismaService,
+      new AuthorizationService(),
+      {} as FileValidationService,
+      {} as DocumentTextExtractorService,
+      {} as AiProvider,
+      {} as EventCompletenessService,
+      {} as FileStorage,
+    );
+
+    await service.start(actor, { clientId, restart: true });
+
+    const archiveInput = updateMany.mock.calls[0]?.[0] as unknown as {
+      where: { type: string; state: string };
+      data: { state: string };
+    };
+    expect(archiveInput.where).toMatchObject({ type: 'EVENT_SETUP', state: 'ACTIVE' });
+    expect(archiveInput.data.state).toBe('ARCHIVED');
+    expect(create).toHaveBeenCalledOnce();
+  });
+
+  it('stores the model reply, merged setup state, and the next missing-detail question', async () => {
     const extractEventInformation = vi.fn().mockResolvedValue({
-      reply: 'I captured the venue. What dates and organizer contact should I add?',
+      reply: 'I captured the venue.',
       event: { name: 'Leadership Forum', category: 'CONFERENCE', venue: 'Riverside Hall' },
       facts: [],
       schedule: [],
     });
-    const completeness = {
-      evaluate: vi.fn().mockReturnValue({
-        score: 30,
-        ready: false,
-        missing: ['startAt'],
-        warnings: [],
-        recommendations: [],
-      }),
+    const completenessResult = {
+      score: 33,
+      ready: false,
+      missing: ['startAt'],
+      warnings: [],
+      recommendations: [],
+    };
+    const updateConversation = vi.fn().mockResolvedValue({ id: sessionId });
+    const createAssistant = vi.fn().mockImplementation(({ data }) =>
+      Promise.resolve({ id: 'assistant-a', ...data, createdAt: new Date() }),
+    );
+    const createUser = vi.fn().mockResolvedValue({
+      id: 'user-a',
+      role: 'USER',
+      content: 'The venue is Riverside Hall.',
+    });
+    const transaction = {
+      conversation: { update: updateConversation },
+      conversationMessage: { create: createAssistant },
     };
     const service = new EventSetupAnalysisService(
       {
         client: { findUnique: vi.fn().mockResolvedValue({ name: 'Northstar Events' }) },
+        conversation: {
+          findFirst: vi.fn().mockResolvedValue({
+            id: sessionId,
+            clientId,
+            draft: { event: { description: 'Annual leadership forum' } },
+            setupDocuments: [],
+            messages: [
+              {
+                role: 'CONCIERGE',
+                content: 'What venue should I add for this event?',
+                createdAt: new Date('2027-01-01T10:00:00Z'),
+              },
+            ],
+          }),
+        },
+        conversationMessage: { create: createUser },
+        $transaction: vi.fn((work: (value: typeof transaction) => unknown) =>
+          work(transaction),
+        ),
       } as unknown as PrismaService,
       new AuthorizationService(),
       {} as FileValidationService,
       {} as DocumentTextExtractorService,
       { extractEventInformation } as unknown as AiProvider,
-      completeness as unknown as EventCompletenessService,
+      { evaluate: vi.fn().mockReturnValue(completenessResult) } as unknown as EventCompletenessService,
+      {} as FileStorage,
     );
 
     const result = await service.analyze(
       actor,
-      {
-        clientId,
-        text: 'The venue is Riverside Hall.',
-        context: JSON.stringify({ event: { description: 'Annual leadership forum' } }),
-      },
+      { clientId, sessionId, text: 'The venue is Riverside Hall.' },
       undefined,
       'request-a',
     );
 
     expect(extractEventInformation).toHaveBeenCalledWith(
-      expect.stringContaining('Latest event creator message:\nThe venue is Riverside Hall.'),
+      expect.stringContaining('Previously confirmed event setup state:'),
       'request-a',
     );
     expect(extractEventInformation).toHaveBeenCalledWith(
-      expect.stringContaining('Previously reviewed event context:'),
+      expect.stringContaining('Concierge: What venue should I add for this event?'),
       'request-a',
     );
+    expect(result.event).toMatchObject({
+      name: 'Leadership Forum',
+      description: 'Annual leadership forum',
+      venue: 'Riverside Hall',
+    });
     expect(result.message).toBe(
-      'I captured the venue. What dates and organizer contact should I add?',
+      'I captured the venue. What should I add for the event start date and time?',
     );
+    expect(updateConversation).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: sessionId } }),
+    );
+  });
+
+  it('stores an uploaded setup file and its extracted text before the event exists', async () => {
+    const documentCreate = vi
+      .fn<(input: { data: Record<string, unknown> }) => Promise<Record<string, unknown>>>()
+      .mockResolvedValue({
+        id: 'document-a',
+        originalName: 'event-plan.txt',
+        size: 62,
+      });
+    const transaction = {
+      document: { create: documentCreate },
+      auditLog: { create: vi.fn().mockResolvedValue({ id: 'audit-a' }) },
+      conversation: { update: vi.fn().mockResolvedValue({ id: sessionId }) },
+      conversationMessage: {
+        create: vi.fn().mockImplementation(({ data }) =>
+          Promise.resolve({ id: 'assistant-a', ...data, createdAt: new Date() }),
+        ),
+      },
+    };
+    const storage = {
+      upload: vi.fn().mockResolvedValue({ objectKey: 'stored/event-plan.txt', bucket: 'events' }),
+      delete: vi.fn(),
+    };
+    const service = new EventSetupAnalysisService(
+      {
+        client: { findUnique: vi.fn().mockResolvedValue({ name: 'Northstar Events' }) },
+        conversation: {
+          findFirst: vi.fn().mockResolvedValue({
+            id: sessionId,
+            clientId,
+            draft: {},
+            setupDocuments: [],
+          }),
+        },
+        conversationMessage: {
+          create: vi.fn().mockResolvedValue({ id: 'user-a', role: 'USER' }),
+        },
+        document: { findUnique: vi.fn().mockResolvedValue(null) },
+        $transaction: vi.fn((work: (value: typeof transaction) => unknown) => work(transaction)),
+      } as unknown as PrismaService,
+      new AuthorizationService(),
+      { validate: vi.fn().mockReturnValue('txt') },
+      {
+        extract: vi.fn().mockResolvedValue({
+          text: 'Leadership forum at Riverside Hall. Organizer details to follow.',
+          metadata: { characters: 62 },
+        }),
+      } as unknown as DocumentTextExtractorService,
+      {
+        extractEventInformation: vi.fn().mockResolvedValue({
+          reply: 'I found the venue. What is the event start date and time?',
+          event: { venue: 'Riverside Hall' },
+          facts: [],
+          schedule: [],
+        }),
+      } as unknown as AiProvider,
+      {
+        evaluate: vi.fn().mockReturnValue({
+          score: 11,
+          ready: false,
+          missing: ['name'],
+          warnings: [],
+          recommendations: [],
+        }),
+      } as unknown as EventCompletenessService,
+      storage as unknown as FileStorage,
+    );
+    const file = {
+      originalname: 'event-plan.txt',
+      mimetype: 'text/plain',
+      size: 62,
+      buffer: Buffer.from('Leadership forum at Riverside Hall. Organizer details to follow.'),
+    } as Express.Multer.File;
+
+    const result = await service.analyze(
+      actor,
+      { clientId, sessionId },
+      file,
+      'request-file',
+    );
+
+    expect(storage.upload).toHaveBeenCalledOnce();
+    const documentInput = documentCreate.mock.calls[0]?.[0];
+    expect(documentInput?.data).toMatchObject({
+      setupConversationId: sessionId,
+      processingStatus: 'PENDING',
+    });
+    expect(documentInput?.data.extraction).toBeDefined();
+    expect(documentInput?.data).not.toHaveProperty('eventId');
+    expect(result.file).toEqual({ id: 'document-a', name: 'event-plan.txt', size: 62 });
   });
 });

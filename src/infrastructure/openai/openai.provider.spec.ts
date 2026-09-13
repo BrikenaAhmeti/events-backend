@@ -67,6 +67,13 @@ describe('OpenAiProvider streaming', () => {
       expect.objectContaining({ model: 'test-model', stream: true }),
       expect.objectContaining({ headers: { 'X-Client-Request-Id': 'request-a' } }),
     );
+    const request = openAi.create.mock.calls.at(-1)?.[0] as unknown as {
+      input: Array<{ role: string; content: string }>;
+    };
+    expect(request.input[0]?.content).toContain('Answer only questions that are relevant');
+    expect(request.input[0]?.content).toContain(
+      'General guidance — not confirmed by the event creator:',
+    );
   });
 });
 

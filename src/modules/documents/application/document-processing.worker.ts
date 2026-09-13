@@ -65,11 +65,18 @@ export class DocumentProcessingWorker implements OnModuleInit, OnModuleDestroy {
   }
 
   private async process(documentId: string, requestId: string): Promise<void> {
-    const document = await this.prisma.document.findUnique({
+    const storedDocument = await this.prisma.document.findUnique({
       where: { id: documentId },
       include: { event: true },
     });
-    if (!document) throw new Error('DocumentNotFound');
+    if (!storedDocument) throw new Error('DocumentNotFound');
+    if (!storedDocument.event || !storedDocument.eventId)
+      throw new Error('SetupDocumentNotReady');
+    const document = {
+      ...storedDocument,
+      event: storedDocument.event,
+      eventId: storedDocument.eventId,
+    };
     await this.prisma.document.update({
       where: { id: documentId },
       data: { processingStatus: 'PROCESSING', processingError: null },
