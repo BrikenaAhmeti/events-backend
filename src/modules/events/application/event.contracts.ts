@@ -106,13 +106,35 @@ export const updateEventSchema = z.object({
   configuration: z.record(z.string(), z.unknown()).optional(),
 });
 
+const lifecycleFilterSchema = z.enum(['UNSCHEDULED', 'UPCOMING', 'ONGOING', 'PAST', 'CANCELLED']);
+const eventStatusFilterSchema = z.enum(['DRAFT', 'READY', 'PUBLISHED', 'CANCELLED', 'ARCHIVED']);
+const splitMultiValueQuery = (value: unknown) => {
+  if (value === undefined || value === '') return undefined;
+  const inputs: unknown[] = Array.isArray(value) ? (value as unknown[]) : [value];
+  const values: string[] = [];
+  for (const input of inputs) {
+    if (typeof input !== 'string') return value;
+    for (const part of input.split(',')) {
+      const normalized = part.trim();
+      if (normalized) values.push(normalized);
+    }
+  }
+  return [...new Set(values)];
+};
+
 export const eventListQuerySchema = z
   .object({
     clientId: z.uuid().optional(),
     cursor: z.uuid().optional(),
     limit: z.coerce.number().int().min(1).max(50).default(20),
-    lifecycle: z.enum(['UNSCHEDULED', 'UPCOMING', 'ONGOING', 'PAST', 'CANCELLED']).optional(),
-    status: z.enum(['DRAFT', 'READY', 'PUBLISHED', 'CANCELLED', 'ARCHIVED']).optional(),
+    lifecycle: z.preprocess(
+      splitMultiValueQuery,
+      z.array(lifecycleFilterSchema).min(1).max(5).optional(),
+    ),
+    status: z.preprocess(
+      splitMultiValueQuery,
+      z.array(eventStatusFilterSchema).min(1).max(5).optional(),
+    ),
     date: z.iso.date().optional(),
     from: z.iso.date().optional(),
     to: z.iso.date().optional(),

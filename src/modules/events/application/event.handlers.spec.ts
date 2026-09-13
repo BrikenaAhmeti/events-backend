@@ -6,8 +6,8 @@ import { Permission } from '../../memberships/domain/permission';
 import { EventCompletenessService } from '../domain/event-completeness.service';
 import { EventLifecycleService } from '../domain/event-lifecycle.service';
 import { EventMutationPolicyService } from '../domain/event-mutation-policy.service';
-import { CreateEventDraftHandler, PublishEventHandler } from './event.handlers';
-import { CreateEventDraftCommand, PublishEventCommand } from './event.messages';
+import { CreateEventDraftHandler, GetEventsHandler, PublishEventHandler } from './event.handlers';
+import { CreateEventDraftCommand, GetEventsQuery, PublishEventCommand } from './event.messages';
 
 const actor: AuthenticatedActor = {
   userId: 'user-a',
@@ -204,5 +204,51 @@ describe('PublishEventHandler', () => {
       expect.objectContaining({ type: 'EVENT_PUBLISHED', eventId: 'event-a' }),
     );
     expect(databaseTransaction.auditLog.create).toHaveBeenCalledOnce();
+  });
+});
+
+describe('GetEventsHandler', () => {
+  it('combines selected lifecycle and workflow statuses as multi-value filters', async () => {
+    const findMany = vi.fn().mockResolvedValue([]);
+    const prisma = { event: { findMany } } as unknown as PrismaService;
+    const authorization = new AuthorizationService();
+    const lifecycle = new EventLifecycleService();
+    const handler = new GetEventsHandler(
+      prisma,
+      authorization,
+      new EventCompletenessService(),
+      lifecycle,
+      new EventMutationPolicyService(authorization, lifecycle),
+    );
+
+    await handler.execute(
+      new GetEventsQuery(actor, {
+        clientId: 'client-a',
+        limit: 20,
+        lifecycle: ['UPCOMING', 'PAST'],
+        status: ['READY', 'PUBLISHED'],
+      }),
+    );
+
+    const request = findMany.mock.calls[0]?.[0] as unknown as {
+      where: {
+        clientId: string;
+        status: { in: string[] };
+        AND: Array<{
+          OR: Array<{
+            status: { not: string };
+            startAt?: { gt: Date };
+            endAt?: { lt: Date };
+          }>;
+        }>;
+      };
+    };
+    expect(request.where.clientId).toBe('client-a');
+    expect(request.where.status).toEqual({ in: ['READY', 'PUBLISHED'] });
+    expect(request.where.AND[0]?.OR).toHaveLength(2);
+    expect(request.where.AND[0]?.OR[0]).toMatchObject({ status: { not: 'CANCELLED' } });
+    expect(request.where.AND[0]?.OR[0]?.startAt?.gt).toBeInstanceOf(Date);
+    expect(request.where.AND[0]?.OR[1]).toMatchObject({ status: { not: 'CANCELLED' } });
+    expect(request.where.AND[0]?.OR[1]?.endAt?.lt).toBeInstanceOf(Date);
   });
 });

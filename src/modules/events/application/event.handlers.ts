@@ -331,17 +331,21 @@ export class GetEventsHandler implements IQueryHandler<GetEventsQuery> {
     if (resolvedClientId) this.authorization.assert(actor, resolvedClientId, Permission.EVENT_READ);
     const now = new Date();
     const and: Prisma.EventWhereInput[] = [];
-    if (input.lifecycle === 'UNSCHEDULED') and.push({ startAt: null });
-    if (input.lifecycle === 'UPCOMING')
-      and.push({ status: { not: 'CANCELLED' }, startAt: { gt: now } });
-    if (input.lifecycle === 'ONGOING')
-      and.push({
-        status: { not: 'CANCELLED' },
-        startAt: { lte: now },
-        OR: [{ endAt: null }, { endAt: { gte: now } }],
-      });
-    if (input.lifecycle === 'PAST') and.push({ status: { not: 'CANCELLED' }, endAt: { lt: now } });
-    if (input.lifecycle === 'CANCELLED') and.push({ status: 'CANCELLED' });
+    const lifecycleFilters = (input.lifecycle ?? []).map((lifecycle): Prisma.EventWhereInput => {
+      if (lifecycle === 'UNSCHEDULED') return { startAt: null };
+      if (lifecycle === 'UPCOMING')
+        return { status: { not: 'CANCELLED' }, startAt: { gt: now } };
+      if (lifecycle === 'ONGOING')
+        return {
+          status: { not: 'CANCELLED' },
+          startAt: { lte: now },
+          OR: [{ endAt: null }, { endAt: { gte: now } }],
+        };
+      if (lifecycle === 'PAST')
+        return { status: { not: 'CANCELLED' }, endAt: { lt: now } };
+      return { status: 'CANCELLED' };
+    });
+    if (lifecycleFilters.length) and.push({ OR: lifecycleFilters });
     if (input.date) {
       const start = new Date(`${input.date}T00:00:00.000Z`);
       const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
@@ -357,7 +361,7 @@ export class GetEventsHandler implements IQueryHandler<GetEventsQuery> {
     }
     const where: Prisma.EventWhereInput = {
       ...(resolvedClientId ? { clientId: resolvedClientId } : {}),
-      ...(input.status ? { status: input.status } : {}),
+      ...(input.status ? { status: { in: input.status } } : {}),
       ...(input.createdByUserId ? { createdByUserId: input.createdByUserId } : {}),
       ...(input.search ? { name: { contains: input.search, mode: 'insensitive' } } : {}),
       ...(and.length ? { AND: and } : {}),
