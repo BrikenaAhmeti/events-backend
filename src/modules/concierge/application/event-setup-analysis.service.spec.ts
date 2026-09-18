@@ -33,7 +33,7 @@ describe('EventSetupAnalysisService', () => {
           id: 'welcome-a',
           role: 'CONCIERGE',
           content:
-            'Let’s set up a new event for Northstar Events. Would you like to describe the event step by step, attach an event file, or use both? I’ll review what you provide and ask for any mandatory details that are still missing.',
+            'Let’s set up a new event for Northstar Events. I can guide you one short question at a time, or you can ask for a file template to fill in and upload here.',
           metadata: {},
           createdAt: new Date('2027-01-01T10:00:00Z'),
         },
@@ -56,7 +56,7 @@ describe('EventSetupAnalysisService', () => {
 
     expect(result.sessionId).toBe(sessionId);
     expect(result.resumed).toBe(false);
-    expect(result.messages[0]?.content).toContain('attach an event file');
+    expect(result.messages[0]?.content).toContain('file template');
     const createInput = createConversation.mock.calls[0]?.[0] as unknown as {
       data: { type: string; userId: string };
     };
@@ -96,6 +96,64 @@ describe('EventSetupAnalysisService', () => {
     expect(archiveInput.where).toMatchObject({ type: 'EVENT_SETUP', state: 'ACTIVE' });
     expect(archiveInput.data.state).toBe('ARCHIVED');
     expect(create).toHaveBeenCalledOnce();
+  });
+
+  it('offers a persisted fillable template when the creator asks for a file', async () => {
+    const createMessage = vi
+      .fn<
+        (input: {
+          data: { role: string; metadata?: { setupTemplate: string }; [key: string]: unknown };
+        }) => Promise<Record<string, unknown>>
+      >()
+      .mockImplementation(({ data }) =>
+        Promise.resolve({ id: `message-${data.role}`, ...data, createdAt: new Date() }),
+      );
+    const extractEventInformation = vi.fn();
+    const service = new EventSetupAnalysisService(
+      {
+        client: { findUnique: vi.fn().mockResolvedValue({ name: 'Northstar Events' }) },
+        conversation: {
+          findFirst: vi.fn().mockResolvedValue({
+            id: sessionId,
+            clientId,
+            draft: {},
+            setupDocuments: [],
+            messages: [],
+          }),
+        },
+        conversationMessage: { create: createMessage },
+      } as unknown as PrismaService,
+      new AuthorizationService(),
+      {} as FileValidationService,
+      {} as DocumentTextExtractorService,
+      { extractEventInformation } as unknown as AiProvider,
+      {
+        evaluate: vi.fn().mockReturnValue({
+          score: 0,
+          ready: false,
+          missing: ['name'],
+          warnings: [],
+          recommendations: [],
+        }),
+      } as unknown as EventCompletenessService,
+      {} as FileStorage,
+    );
+
+    const result = await service.analyze(
+      actor,
+      { clientId, sessionId, text: 'file' },
+      undefined,
+      'request-template',
+    );
+
+    expect(result.template).toEqual({
+      kind: 'EVENT_BRIEF',
+      fileName: 'feliam-event-brief-template.txt',
+    });
+    expect(createMessage.mock.calls[1]?.[0].data.metadata).toEqual({
+      setupTemplate: 'EVENT_BRIEF',
+    });
+    expect(extractEventInformation).not.toHaveBeenCalled();
   });
 
   it('stores the model reply, merged setup state, and the next missing-detail question', async () => {
@@ -158,7 +216,14 @@ describe('EventSetupAnalysisService', () => {
 
     const result = await service.analyze(
       actor,
-      { clientId, sessionId, text: 'The venue is Riverside Hall.' },
+      {
+        clientId,
+        sessionId,
+        text: 'The venue is Riverside Hall.',
+        startAt: '2027-10-12T08:00:00.000Z',
+        endAt: '2027-10-12T18:00:00.000Z',
+        timezone: 'Europe/Lisbon',
+      },
       undefined,
       'request-a',
     );
@@ -175,9 +240,12 @@ describe('EventSetupAnalysisService', () => {
       name: 'Leadership Forum',
       description: 'Annual leadership forum',
       venue: 'Riverside Hall',
+      startAt: '2027-10-12T08:00:00.000Z',
+      endAt: '2027-10-12T18:00:00.000Z',
+      timezone: 'Europe/Lisbon',
     });
     expect(result.message).toBe(
-      'I captured the venue. What should I add for the event start date and time?',
+      'I captured the venue. Choose the start and end date and time below. I’ll include your local timezone.',
     );
     expect(updateConversation).toHaveBeenCalledWith(
       expect.objectContaining({ where: { id: sessionId } }),

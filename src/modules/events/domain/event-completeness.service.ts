@@ -53,9 +53,6 @@ export class EventCompletenessService {
       recommendations: [
         ...(!event.venue ? ['Add a primary venue when it becomes available.'] : []),
         ...(event.venue && !event.venueAddress ? ['Add the full venue address.'] : []),
-        ...(!event.venueDetails ? ['Add entrances, rooms, floors and internal wayfinding.'] : []),
-        ...(!event.restroomInformation ? ['Add restroom locations and availability.'] : []),
-        ...(!event.accessibilityInformation ? ['Add venue accessibility information.'] : []),
       ],
     };
   }

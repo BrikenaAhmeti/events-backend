@@ -28,6 +28,7 @@ export class PlatformAuthGuard implements CanActivate {
     if (!token) throw new ApplicationError(401, 'UNAUTHENTICATED', 'Authentication is required.');
     const identity = await this.provider.verify(token);
     const user = await this.prisma.user.findUnique({
+      relationLoadStrategy: 'join',
       where: { supabaseUserId: identity.id },
       include: {
         memberships: {

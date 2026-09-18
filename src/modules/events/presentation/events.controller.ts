@@ -7,7 +7,7 @@ import {
   createEventSchema,
   eventListQuerySchema,
   scheduleItemSchema,
-  updateEventSchema,
+  updateEventDetailsSchema,
 } from '../application/event.contracts';
 import {
   AddScheduleItemCommand,
@@ -69,7 +69,7 @@ export class EventsController {
     @Body() body: unknown,
   ) {
     return this.commands.execute(
-      new UpdateEventDetailsCommand(actor, requestId, eventId, updateEventSchema.parse(body)),
+      new UpdateEventDetailsCommand(actor, requestId, eventId, updateEventDetailsSchema.parse(body)),
     );
   }
 

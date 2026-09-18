@@ -12,20 +12,14 @@ import { CsrfService } from '../../../common/security/csrf.service';
 import type { AuthenticatedActor } from '../../../common/types/request.types';
 import { PrismaService } from '../../../infrastructure/database/prisma.service';
 import { EmailProvider } from '../../../infrastructure/email/email.provider';
+import { buildPasswordResetEmail } from '../../../infrastructure/email/account-emails';
+import { emailBrand } from '../../../infrastructure/email/email-template';
 import { AuditService } from '../../audit/application/audit.service';
 import { SupabaseAuthProvider, type AuthSession } from '../infrastructure/supabase-auth.provider';
 import {
   PLATFORM_SESSION_TTL_MS,
   PlatformSessionCookieService,
 } from './platform-session-cookie.service';
-
-const escapeHtml = (value: string) =>
-  value.replace(
-    /[&<>"']/g,
-    (character) =>
-      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' })[character] ??
-      character,
-  );
 
 @Injectable()
 export class AuthService {
@@ -82,11 +76,12 @@ export class AuthService {
     try {
       const tokenHash = await this.provider.createPasswordResetToken(email, redirectTo);
       const url = `${redirectTo}?token_hash=${encodeURIComponent(tokenHash)}`;
-      const productName = this.config.get('PRODUCT_NAME', { infer: true });
       await this.email.send({
         to: email,
-        subject: `Reset your ${productName} password`,
-        html: `<p>We received a request to reset your ${escapeHtml(productName)} password.</p><p><a href="${escapeHtml(url)}">Reset password</a></p><p>If you did not request this, you can ignore this email.</p>`,
+        ...buildPasswordResetEmail({
+          brand: emailBrand(this.config),
+          resetUrl: url,
+        }),
         idempotencyKey: `password-reset-${tokenHash}`,
       });
     } catch {
@@ -175,6 +170,7 @@ export class AuthService {
 
   private async loadApplicationUserByIdentity(supabaseUserId: string) {
     const user = await this.prisma.user.findUnique({
+      relationLoadStrategy: 'join',
       where: { supabaseUserId },
       include: {
         memberships: {
@@ -190,6 +186,7 @@ export class AuthService {
 
   private async loadApplicationUser(userId: string) {
     const user = await this.prisma.user.findUnique({
+      relationLoadStrategy: 'join',
       where: { id: userId },
       include: {
         memberships: {

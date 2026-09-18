@@ -57,6 +57,14 @@ For SMTP on Vercel, use port `465` or `587`, not port `25`. The durable PostgreS
 6. Configure the frontend application URL as an allowed Auth redirect URL.
 7. Run `pnpm db:migrate:deploy`. The migration enables `citext` and `vector` and creates the HNSW vector index.
 
+### Event and dashboard read performance
+
+Set `connection_limit=3` in the pooled `DATABASE_URL` for local development and in the deployed backend's environment. A limit of `1` serializes the events page's list and filter requests as well as the dashboard's parallel queries. Keep the other connection options intact and size the limit against the database pooler's capacity and the number of backend instances. The backend runs in `fra1`, alongside the Frankfurt database.
+
+The Prisma client enables [`relationJoins`](https://www.prisma.io/docs/orm/v6/prisma-client/queries/relation-queries#relation-load-strategies-preview). Account permissions, event lists, event details and dashboard cards are loaded with database joins, reducing network round trips without caching authorization. Regenerate the client with `pnpm prisma:generate` after pulling this change; deployment does this through `postinstall`. This client setting needs no database migration.
+
+Run `pnpm build` and `node scripts/profile-reads.cjs` to measure read latency using the configured database. The probe only reads data and prints timings and query counts. For comparison, use `PROFILE_POOL_SIZE=1 PROFILE_RELATIONS=query node scripts/profile-reads.cjs`, then `PROFILE_POOL_SIZE=3 PROFILE_RELATIONS=join node scripts/profile-reads.cjs`. These overrides only affect the probe. Timings include network latency from the machine running it, not browser rendering or token verification.
+
 Prisma application authorization is the primary database access boundary. This implementation does not represent Supabase RLS as protecting a Prisma connection that may use a bypass-capable role. If RLS is added later, use and test a non-bypass database role while retaining all NestJS policies.
 
 Supabase Storage uses the same `SUPABASE_URL` and backend-only `SUPABASE_SECRET_KEY` as administrative authentication. The bucket must remain private. Object keys are server generated and tenant/event scoped, original filenames are metadata only, and browsers receive only short-lived signed download URLs.
@@ -67,7 +75,23 @@ SMTP is the default provider. Fill `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMT
 
 Resend remains an optional alternative. Set `EMAIL_PROVIDER=resend`, verify a sending domain and fill `RESEND_API_KEY` and `EMAIL_FROM` only if you choose it later.
 
-Guest invitations are rendered as responsive branded HTML with the Feliam identity, the client organization, event summary, inline QR attachment, primary action button, full fallback link and footer. One independently generated personalized URL is sent per unsent guest. The URL and QR carry only an opaque random token and no guest PII.
+All application emails (staff invitations, guest invitations and password resets) use the same responsive Feliam layout: the bundled inline logo, descriptive subject and preview text, primary action button, fallback URL, help contact and an explanation of why the recipient received the message. Both SMTP and Resend send HTML plus a complete plain-text alternative. Guest invitations additionally include the host, dates with timezone, venue and destination, and a personal inline QR code. One independently generated personalized URL is sent per unsent guest. The URL and QR carry only an opaque random token and no guest PII.
+
+Use these sender and footer settings in local `.env` and in the deployed backend environment:
+
+```dotenv
+EMAIL_FROM="Feliam <info@feliam.com>"
+EMAIL_REPLY_TO=info@feliam.com
+EMAIL_WEBSITE_URL=https://feliam.com
+```
+
+`EMAIL_REPLY_TO` must be a monitored mailbox; it is also the help address in the footer. `EMAIL_WEBSITE_URL` is the public Feliam website. `PUBLIC_APP_URL` controls invitation, activation and recovery links and must point to the live HTTPS frontend in production. The logo is copied from the frontend's existing Feliam asset and bundled by Nest into the backend build, so it does not depend on the recipient being able to load frontend assets.
+
+Changing the template or `EMAIL_FROM` alone cannot fix spam placement. A personal Gmail login such as `feliamltd@gmail.com` can [rewrite the From header](https://nodemailer.com/guides/using-gmail#gmail-rewrites-the-from-header). To send as `info@feliam.com`, use SMTP credentials/relay authorized for that domain, a properly configured Google Workspace send-as identity, or Resend with the domain verified. Do not replace only `SMTP_USER` while keeping another account's password. Publish the chosen provider's SPF and DKIM records and configure DMARC with alignment to the From domain; confirm these pass using Gmail's “Show original” on a delivered message. See [Google's sender guidelines](https://support.google.com/mail/answer/81126?hl=en). DNS records and mailbox/provider verification are external setup, not changes that email HTML can make. Inbox placement also depends on sender reputation and recipient feedback.
+
+SMTP now requires encrypted transport and uses a stable Message-ID under the configured sender domain. Resend retains its existing idempotency key. No marketing tracking or unrelated promotional content is added to account emails.
+
+Generate local previews and `.eml` files without sending anything with `pnpm exec tsx scripts/preview-emails.ts`. It writes HTML, plain text and MIME email files to the system temporary directory; an optional output directory can be passed as the final argument. These use demonstration links only. Open `index.html` to review all three templates. For a real delivery check, verify the deployed environment and send only to an authorized test recipient, then inspect the received authentication headers.
 
 ## OpenAI setup
 
@@ -103,6 +127,8 @@ If a different embedding model changes vector dimensions, update the `DocumentCh
 | `EMAIL_PROVIDER`           | email                       | `smtp` by default; `resend` remains optional      |
 | `RESEND_API_KEY`           | Resend email                | required only when `EMAIL_PROVIDER=resend`        |
 | `EMAIL_FROM`               | email                       | verified sender                                   |
+| `EMAIL_REPLY_TO`           | email                       | monitored reply/help mailbox; defaults to `info@feliam.com` |
+| `EMAIL_WEBSITE_URL`        | email                       | HTTPS footer website; defaults to `https://feliam.com` |
 | `SMTP_HOST`                | SMTP email                  | SMTP server hostname                              |
 | `SMTP_PORT`                | SMTP email                  | defaults to `587`                                 |
 | `SMTP_SECURE`              | SMTP email                  | `true` for implicit TLS, otherwise STARTTLS       |

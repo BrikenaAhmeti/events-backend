@@ -40,6 +40,7 @@ export class DashboardService {
         this.metricsQuery(clientIds, now),
       ),
       this.prisma.event.findMany({
+        relationLoadStrategy: 'join',
         where: eventWhere,
         take: 6,
         orderBy: { updatedAt: 'desc' },
@@ -83,18 +84,20 @@ export class DashboardService {
   }
 
   private metricsQuery(clientIds: string[] | undefined, now: Date): Prisma.Sql {
+    // Raw-query string parameters are text; tenant IDs are UUID columns.
+    const scopedIds = (clientIds ?? []).map((id) => Prisma.sql`${id}::uuid`);
     const clientScope =
       clientIds === undefined
         ? Prisma.sql`TRUE`
         : clientIds.length === 0
           ? Prisma.sql`FALSE`
-          : Prisma.sql`c."id" IN (${Prisma.join(clientIds)})`;
+          : Prisma.sql`c."id" IN (${Prisma.join(scopedIds)})`;
     const eventScope =
       clientIds === undefined
         ? Prisma.sql`TRUE`
         : clientIds.length === 0
           ? Prisma.sql`FALSE`
-          : Prisma.sql`e."clientId" IN (${Prisma.join(clientIds)})`;
+          : Prisma.sql`e."clientId" IN (${Prisma.join(scopedIds)})`;
 
     return Prisma.sql`
       WITH "clientMetrics" AS (

@@ -107,6 +107,10 @@ export const updateEventSchema = z.object({
   configuration: z.record(z.string(), z.unknown()).optional(),
 });
 
+export const updateEventDetailsSchema = updateEventSchema.extend({
+  facts: z.array(eventFactInputSchema).max(200).optional(),
+});
+
 const lifecycleFilterSchema = z.enum(['UNSCHEDULED', 'UPCOMING', 'ONGOING', 'PAST', 'CANCELLED']);
 const eventStatusFilterSchema = z.enum(['DRAFT', 'READY', 'PUBLISHED', 'CANCELLED', 'ARCHIVED']);
 const splitMultiValueQuery = (value: unknown) => {
@@ -148,6 +152,6 @@ export const eventListQuerySchema = z
   });
 
 export type CreateEventInput = z.infer<typeof createEventSchema>;
-export type UpdateEventInput = z.infer<typeof updateEventSchema>;
+export type UpdateEventInput = z.infer<typeof updateEventDetailsSchema>;
 export type ScheduleItemInput = z.infer<typeof scheduleItemSchema>;
 export type EventListQueryInput = z.infer<typeof eventListQuerySchema>;

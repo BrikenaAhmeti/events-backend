@@ -6,8 +6,18 @@ import { Permission } from '../../memberships/domain/permission';
 import { EventCompletenessService } from '../domain/event-completeness.service';
 import { EventLifecycleService } from '../domain/event-lifecycle.service';
 import { EventMutationPolicyService } from '../domain/event-mutation-policy.service';
-import { CreateEventDraftHandler, GetEventsHandler, PublishEventHandler } from './event.handlers';
-import { CreateEventDraftCommand, GetEventsQuery, PublishEventCommand } from './event.messages';
+import {
+  CreateEventDraftHandler,
+  GetEventsHandler,
+  PublishEventHandler,
+  UpdateEventDetailsHandler,
+} from './event.handlers';
+import {
+  CreateEventDraftCommand,
+  GetEventsQuery,
+  PublishEventCommand,
+  UpdateEventDetailsCommand,
+} from './event.messages';
 
 const actor: AuthenticatedActor = {
   userId: 'user-a',
@@ -282,6 +292,64 @@ describe('PublishEventHandler', () => {
       expect.objectContaining({ type: 'EVENT_PUBLISHED', eventId: 'event-a' }),
     );
     expect(databaseTransaction.auditLog.create).toHaveBeenCalledOnce();
+  });
+});
+
+describe('UpdateEventDetailsHandler', () => {
+  it('persists flexible titled event details without fixed information fields', async () => {
+    const updateEvent = vi
+      .fn<(input: { data: Record<string, unknown> }) => Promise<typeof readyEvent>>()
+      .mockResolvedValue(readyEvent);
+    const upsertFact = vi
+      .fn<
+        (input: {
+          create: Record<string, unknown>;
+          update: Record<string, unknown>;
+        }) => Promise<{ id: string }>
+      >()
+      .mockResolvedValue({ id: 'fact-a' });
+    const databaseTransaction = {
+      event: { update: updateEvent },
+      eventFact: {
+        deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+        upsert: upsertFact,
+      },
+      auditLog: { create: vi.fn().mockResolvedValue({ id: 'audit-a' }) },
+    };
+    const prisma = {
+      event: {
+        findUnique: vi.fn().mockResolvedValue({ ...readyEvent, createdByUserId: actor.userId }),
+      },
+      $transaction: vi.fn((work: (transaction: typeof databaseTransaction) => unknown) =>
+        work(databaseTransaction),
+      ),
+    } as unknown as PrismaService;
+    const authorization = new AuthorizationService();
+    const lifecycle = new EventLifecycleService();
+    const handler = new UpdateEventDetailsHandler(
+      prisma,
+      new EventCompletenessService(),
+      new EventMutationPolicyService(authorization, lifecycle),
+    );
+
+    await handler.execute(
+      new UpdateEventDetailsCommand(actor, 'request-details', readyEvent.id, {
+        facts: [
+          {
+            key: 'Shuttle pickup',
+            value: 'Meet in the hotel lobby at 08:30.',
+            confidence: 1,
+          },
+        ],
+      }),
+    );
+
+    expect(upsertFact.mock.calls[0]?.[0].create).toMatchObject({
+      key: 'Shuttle pickup',
+      value: 'Meet in the hotel lobby at 08:30.',
+      sourceType: 'USER_INPUT',
+    });
+    expect(updateEvent.mock.calls[0]?.[0].data).not.toHaveProperty('facts');
   });
 });
 

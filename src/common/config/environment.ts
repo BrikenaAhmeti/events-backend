@@ -20,6 +20,12 @@ export const environmentSchema = z
     EMAIL_PROVIDER: z.enum(['resend', 'smtp']).default('smtp'),
     RESEND_API_KEY: z.string().default(''),
     EMAIL_FROM: z.string().default(''),
+    EMAIL_REPLY_TO: z.string().email().default('info@feliam.com'),
+    EMAIL_WEBSITE_URL: z
+      .string()
+      .url()
+      .refine((value) => new URL(value).protocol === 'https:', 'Use an HTTPS website URL')
+      .default('https://feliam.com'),
     SMTP_HOST: z.string().default(''),
     SMTP_PORT: z.coerce.number().int().positive().default(587),
     SMTP_SECURE: z

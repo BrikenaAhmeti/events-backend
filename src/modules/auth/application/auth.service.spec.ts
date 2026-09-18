@@ -162,12 +162,25 @@ describe('AuthService account settings', () => {
       actor.email,
       'https://feliam.example/reset-password',
     );
-    expect(email.send).toHaveBeenCalledWith({
-      to: actor.email,
-      subject: 'Reset your Feliam password',
-      html: '<p>We received a request to reset your Feliam password.</p><p><a href="https://feliam.example/reset-password?token_hash=recovery-token-hash">Reset password</a></p><p>If you did not request this, you can ignore this email.</p>',
-      idempotencyKey: 'password-reset-recovery-token-hash',
-    });
+    expect(email.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: actor.email,
+        subject: 'Reset your Feliam password',
+        html: expect.stringContaining(
+          'href="https://feliam.example/reset-password?token_hash=recovery-token-hash"',
+        ) as string,
+        text: expect.stringContaining(
+          'https://feliam.example/reset-password?token_hash=recovery-token-hash',
+        ) as string,
+        attachments: [
+          expect.objectContaining({
+            contentId: 'feliam-logo',
+            contentType: 'image/png',
+          }),
+        ],
+        idempotencyKey: 'password-reset-recovery-token-hash',
+      }),
+    );
   });
 });
 

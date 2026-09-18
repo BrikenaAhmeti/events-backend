@@ -6,20 +6,14 @@ import type { Environment } from '../../../common/config/environment';
 import { FieldEncryptionService } from '../../../common/security/field-encryption.service';
 import { TokenService } from '../../../common/security/token.service';
 import { EmailProvider } from '../../../infrastructure/email/email.provider';
+import { buildStaffInvitationEmail } from '../../../infrastructure/email/account-emails';
+import { emailBrand } from '../../../infrastructure/email/email-template';
 import { PrismaService } from '../../../infrastructure/database/prisma.service';
 import { JobQueue } from '../../../infrastructure/jobs/job-queue';
 import { EventGateway } from '../../../infrastructure/websocket/event.gateway';
 import { SupabaseAuthProvider } from '../../auth/infrastructure/supabase-auth.provider';
 import { QrCodeService } from './qr-code.service';
 import { buildGuestInvitationEmail } from './guest-invitation-email';
-
-const escapeHtml = (value: string) =>
-  value.replace(
-    /[&<>"']/g,
-    (character) =>
-      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' })[character] ??
-      character,
-  );
 
 @Injectable()
 export class CommunicationWorker implements OnModuleInit, OnModuleDestroy {
@@ -119,14 +113,11 @@ export class CommunicationWorker implements OnModuleInit, OnModuleDestroy {
       });
     }
     const url = `${this.config.get('PUBLIC_APP_URL', { infer: true })}/i/${issued.raw}`;
-    const productName = this.config.get('PRODUCT_NAME', { infer: true });
-    const publicAppUrl = this.config.get('PUBLIC_APP_URL', { infer: true });
     const qrPng = await this.qr.toPng(url);
     await this.email.send({
       to: invitation.guest.email,
-      subject: `Your invitation to ${invitation.event.name}`,
-      html: buildGuestInvitationEmail({
-        productName,
+      ...buildGuestInvitationEmail({
+        brand: emailBrand(this.config),
         companyName: invitation.event.client.name,
         guestName: invitation.guest.fullName,
         eventName: invitation.event.name,
@@ -137,16 +128,8 @@ export class CommunicationWorker implements OnModuleInit, OnModuleDestroy {
         endAt: invitation.event.endAt,
         timezone: invitation.event.timezone,
         invitationUrl: url,
-        logoUrl: `${publicAppUrl}/brand/feliam-icon.png`,
+        qrPng,
       }),
-      attachments: [
-        {
-          filename: 'event-invitation-qr.png',
-          contentType: 'image/png',
-          content: qrPng,
-          contentId: 'feliam-guest-qr',
-        },
-      ],
       idempotencyKey: `invitation-${invitation.id}`,
     });
     await this.prisma.invitation.update({
@@ -182,11 +165,14 @@ export class CommunicationWorker implements OnModuleInit, OnModuleDestroy {
       { clientId: membership.clientId },
     );
     const actionLink = `${this.config.get('PUBLIC_APP_URL', { infer: true })}/activate?token_hash=${encodeURIComponent(tokenHash)}`;
-    const productName = this.config.get('PRODUCT_NAME', { infer: true });
     await this.email.send({
       to: membership.user.email,
-      subject: `Join ${membership.client.name} on ${productName}`,
-      html: `<p>Hello ${escapeHtml(membership.user.firstName)},</p><p>You have been invited to join <strong>${escapeHtml(membership.client.name)}</strong>.</p><p><a href="${escapeHtml(actionLink)}">Accept invitation</a></p>`,
+      ...buildStaffInvitationEmail({
+        brand: emailBrand(this.config),
+        firstName: membership.user.firstName,
+        companyName: membership.client.name,
+        invitationUrl: actionLink,
+      }),
       idempotencyKey: `staff-${membership.id}-${membership.invitedAt?.getTime() ?? 0}`,
     });
   }

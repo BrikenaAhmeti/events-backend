@@ -4,6 +4,7 @@ import { Resend } from 'resend';
 import type { Environment } from '../../common/config/environment';
 import { ApplicationError } from '../../common/errors/application.error';
 import { EmailProvider, type EmailMessage } from './email.provider';
+import { emailSubject } from './email-template';
 
 @Injectable()
 export class ResendEmailProvider extends EmailProvider {
@@ -19,9 +20,11 @@ export class ResendEmailProvider extends EmailProvider {
     const result = await new Resend(apiKey).emails.send(
       {
         from,
+        replyTo: this.config.get('EMAIL_REPLY_TO', { infer: true }) || from,
         to: message.to,
-        subject: message.subject,
+        subject: emailSubject(message.subject),
         html: message.html,
+        text: message.text,
         attachments: message.attachments?.map((attachment) => ({
           filename: attachment.filename,
           content: attachment.content,

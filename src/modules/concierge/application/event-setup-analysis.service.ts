@@ -14,7 +14,10 @@ import {
   scheduleItemSchema,
   updateEventSchema,
 } from '../../events/application/event.contracts';
-import { EventCompletenessService } from '../../events/domain/event-completeness.service';
+import {
+  type EventCompleteness,
+  EventCompletenessService,
+} from '../../events/domain/event-completeness.service';
 import { AuthorizationService } from '../../memberships/application/authorization.service';
 import { Permission } from '../../memberships/domain/permission';
 
@@ -22,6 +25,9 @@ const setupSchema = z.object({
   clientId: z.uuid(),
   sessionId: z.uuid(),
   text: z.string().trim().max(80_000).optional(),
+  startAt: z.iso.datetime().optional(),
+  endAt: z.iso.datetime().optional(),
+  timezone: z.string().trim().min(3).max(100).optional(),
 });
 const setupStartSchema = z.object({
   clientId: z.uuid(),
@@ -115,7 +121,7 @@ export class EventSetupAnalysisService {
         });
     const resumed = Boolean(session);
     if (!session) {
-      const welcome = `Let’s set up a new event for ${client.name}. Would you like to describe the event step by step, attach an event file, or use both? I’ll review what you provide and ask for any mandatory details that are still missing.`;
+      const welcome = `Let’s set up a new event for ${client.name}. I can guide you through a few short chat steps, grouping related answers together, or you can ask for a file template to fill in and upload here.`;
       session = await this.prisma.conversation.create({
         data: {
           clientId: client.id,
@@ -184,6 +190,44 @@ export class EventSetupAnalysisService {
       select: { name: true },
     });
     if (!client) throw new ApplicationError(404, 'CLIENT_NOT_FOUND', 'Client not found.');
+    const previous = this.readDraft(session.draft);
+
+    if (!file && input.text && this.requestsTemplate(input.text)) {
+      const userMessage = await this.prisma.conversationMessage.create({
+        data: {
+          conversationId: session.id,
+          role: 'USER',
+          content: input.text,
+          status: 'COMPLETE',
+        },
+      });
+      const message =
+        'Download the event brief template below, fill in everything you know, and attach it here when you are ready. You can leave unknown details blank.';
+      const assistantMessage = await this.prisma.conversationMessage.create({
+        data: {
+          conversationId: session.id,
+          role: 'CONCIERGE',
+          content: message,
+          status: 'COMPLETE',
+          metadata: { setupTemplate: 'EVENT_BRIEF' },
+        },
+      });
+      return {
+        sessionId: session.id,
+        message,
+        messages: [userMessage, assistantMessage],
+        event: { ...previous.event, name: previous.event.name ?? undefined },
+        suggestedName: previous.suggestedName,
+        nameWasProvided: Boolean(previous.event.name),
+        completeness: this.completeness.evaluate(this.projectEvent(previous.event)),
+        facts: previous.facts,
+        schedule: previous.schedule,
+        extractedFacts: previous.facts.length,
+        extractedScheduleItems: previous.schedule.length,
+        file: null,
+        template: { kind: 'EVENT_BRIEF', fileName: 'feliam-event-brief-template.txt' },
+      };
+    }
 
     let fileText = '';
     let savedFile: { id: string; name: string; size: number } | null = null;
@@ -223,7 +267,6 @@ export class EventSetupAnalysisService {
         metadata: savedFile ? { documentId: savedFile.id, fileName: savedFile.name } : {},
       },
     });
-    const previous = this.readDraft(session.draft);
     const recentConversation = [...(session.messages ?? [])]
       .reverse()
       .map(
@@ -242,7 +285,14 @@ export class EventSetupAnalysisService {
       .trim();
     const extracted = await this.ai.extractEventInformation(source, requestId);
     const parsed = updateEventSchema.safeParse(extracted.event ?? {});
-    const event = this.mergeEvent(previous.event, parsed.success ? parsed.data : {});
+    const event = this.mergeEvent(
+      this.mergeEvent(previous.event, parsed.success ? parsed.data : {}),
+      {
+        startAt: input.startAt,
+        endAt: input.endAt,
+        timezone: input.timezone,
+      },
+    );
     const extractedFacts = extracted.facts.flatMap((fact) => {
       const result = eventFactInputSchema.safeParse(fact);
       return result.success ? [result.data] : [];
@@ -255,23 +305,7 @@ export class EventSetupAnalysisService {
     const schedule = this.mergeSchedule(previous.schedule, extractedSchedule);
     const suggestedName =
       event.name ?? (previous.suggestedName || this.suggestName(event, client.name));
-    const projected = {
-      name: event.name ?? null,
-      category: event.category ?? null,
-      description: event.description ?? null,
-      destination: event.destination ?? null,
-      venue: event.venue ?? null,
-      venueAddress: event.venueAddress ?? null,
-      venueDetails: event.venueDetails ?? null,
-      restroomInformation: event.restroomInformation ?? null,
-      accessibilityInformation: event.accessibilityInformation ?? null,
-      startAt: event.startAt ? new Date(event.startAt) : null,
-      endAt: event.endAt ? new Date(event.endAt) : null,
-      timezone: event.timezone ?? null,
-      organizerName: event.organizerName ?? null,
-      organizerEmail: event.organizerEmail ?? null,
-    };
-    const completeness = this.completeness.evaluate(projected);
+    const completeness = this.completeness.evaluate(this.projectEvent(event));
     const draft: SetupDraft = {
       event,
       suggestedName,
@@ -279,13 +313,7 @@ export class EventSetupAnalysisService {
       facts,
       schedule,
     };
-    let message =
-      extracted.reply?.trim() ||
-      'I reviewed what you provided and organized the event details available so far.';
-    if (!completeness.ready && !message.includes('?')) {
-      const next = missingLabels[completeness.missing[0] ?? ''] ?? 'the next missing event detail';
-      message = `${message} What should I add for ${next}?`;
-    }
+    const message = this.buildReply(extracted.reply, completeness);
     const assistantMessage = await this.prisma.$transaction(async (transaction) => {
       await transaction.conversation.update({
         where: { id: session.id },
@@ -321,6 +349,65 @@ export class EventSetupAnalysisService {
     return parsed.success
       ? parsed.data
       : { event: {}, facts: [], schedule: [], suggestedName: '', nameWasProvided: false };
+  }
+
+  private requestsTemplate(text: string): boolean {
+    const normalized = text.toLowerCase().trim();
+    if (normalized.length > 160) return false;
+    return /\b(file|template|spreadsheet|document)\b/.test(normalized);
+  }
+
+  private projectEvent(event: SetupDraft['event']) {
+    return {
+      name: event.name ?? null,
+      category: event.category ?? null,
+      description: event.description ?? null,
+      destination: event.destination ?? null,
+      venue: event.venue ?? null,
+      venueAddress: event.venueAddress ?? null,
+      venueDetails: event.venueDetails ?? null,
+      restroomInformation: event.restroomInformation ?? null,
+      accessibilityInformation: event.accessibilityInformation ?? null,
+      startAt: event.startAt ? new Date(event.startAt) : null,
+      endAt: event.endAt ? new Date(event.endAt) : null,
+      timezone: event.timezone ?? null,
+      organizerName: event.organizerName ?? null,
+      organizerEmail: event.organizerEmail ?? null,
+    };
+  }
+
+  private buildReply(reply: string | undefined, completeness: EventCompleteness): string {
+    const acknowledgement = (reply ?? '')
+      .split(/(?<=[.!?])\s+/)
+      .filter((sentence) => !sentence.includes('?'))
+      .join(' ')
+      .trim();
+    if (completeness.ready) {
+      return `${acknowledgement || 'I captured the event details.'} Everything required is ready. Review the summary and tell me if you want to change anything.`;
+    }
+    const missing = new Set(completeness.missing);
+    let question: string;
+    if (['name', 'description', 'category'].some((field) => missing.has(field))) {
+      question =
+        'Send the event name, a short description, and the event type in one message, separated by commas. For example: Leadership Summit, Annual gathering for regional directors, Conference.';
+    } else if (
+      ['startAt', 'endAt', 'timezone'].some((field) => missing.has(field)) ||
+      completeness.warnings.some((warning) =>
+        ['endBeforeStart', 'invalidTimezone'].includes(warning),
+      )
+    ) {
+      question = 'Choose the start and end date and time below. I’ll include your local timezone.';
+    } else if (missing.has('location')) {
+      question =
+        'Send the destination or city, venue, and venue address in one message, separated by commas. Add “not decided” for anything you do not know yet.';
+    } else if (missing.has('organizerName') || missing.has('organizerEmail')) {
+      question =
+        'Send the organizer’s name and email in one message, separated by a comma. For example: Morgan Reed, morgan@example.com.';
+    } else {
+      const next = missingLabels[completeness.missing[0] ?? ''] ?? 'the next event detail';
+      question = `What should I add for ${next}?`;
+    }
+    return `${acknowledgement || 'Thanks, I’m ready for the next step.'} ${question}`;
   }
 
   private mergeEvent(previous: SetupDraft['event'], next: SetupDraft['event']) {

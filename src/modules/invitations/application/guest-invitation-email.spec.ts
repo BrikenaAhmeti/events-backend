@@ -3,8 +3,12 @@ import { QrCodeService } from './qr-code.service';
 
 describe('buildGuestInvitationEmail', () => {
   it('contains client branding, a QR image, and a clickable fallback link', () => {
-    const html = buildGuestInvitationEmail({
-      productName: 'Feliam',
+    const { html, text, attachments, subject } = buildGuestInvitationEmail({
+      brand: {
+        productName: 'Feliam',
+        websiteUrl: 'https://feliam.com',
+        supportEmail: 'info@feliam.com',
+      },
       companyName: 'Northstar Events',
       guestName: 'Avery Stone',
       eventName: 'Leadership Forum',
@@ -15,7 +19,7 @@ describe('buildGuestInvitationEmail', () => {
       endAt: new Date('2027-10-14T18:00:00Z'),
       timezone: 'Europe/Lisbon',
       invitationUrl: 'https://events.example.test/i/opaque-token',
-      logoUrl: 'https://events.example.test/brand/feliam-icon.png',
+      qrPng: Buffer.from('qr-image'),
     });
 
     expect(html).toContain('Northstar Events');
@@ -23,6 +27,47 @@ describe('buildGuestInvitationEmail', () => {
     expect(html).toContain('https://events.example.test/i/opaque-token');
     expect(html).toContain('Open event invitation');
     expect(html).toContain('Please do not forward it.');
+    expect(html).toContain('cid:feliam-logo');
+    expect(text).toContain('Riverside Hall, Lisbon');
+    expect(text).toContain('09:00 (Europe/Lisbon)');
+    expect(text).toContain('https://events.example.test/i/opaque-token');
+    expect(subject).toBe('Northstar Events: your invitation to Leadership Forum');
+    expect(attachments?.map((attachment) => attachment.contentId)).toEqual([
+      'feliam-logo',
+      'feliam-guest-qr',
+    ]);
+  });
+
+  it('handles incomplete event details and falls back to UTC for legacy invalid timezones', () => {
+    const input = {
+      brand: {
+        productName: 'Feliam',
+        websiteUrl: 'https://feliam.com',
+        supportEmail: 'info@feliam.com',
+      },
+      companyName: 'Northstar',
+      guestName: '',
+      eventName: 'Forum',
+      eventDescription: null,
+      venue: null,
+      destination: null,
+      startAt: null,
+      endAt: null,
+      timezone: 'invalid/timezone',
+      invitationUrl: 'https://events.example.test/i/token',
+      qrPng: Buffer.from('qr'),
+    };
+    const missing = buildGuestInvitationEmail(input);
+    expect(missing.text).toContain('Hello,');
+    expect(missing.text).toContain('Starts: To be confirmed');
+    expect(missing.text).toContain('Location: To be confirmed');
+    expect(missing.text).not.toContain('Ends:');
+    expect(
+      buildGuestInvitationEmail({
+        ...input,
+        startAt: new Date('2027-10-12T08:00:00Z'),
+      }).text,
+    ).toContain('08:00 (UTC)');
   });
 });
 

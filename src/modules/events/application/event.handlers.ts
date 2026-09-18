@@ -198,17 +198,61 @@ export class UpdateEventDetailsHandler implements ICommandHandler<UpdateEventDet
     const existing = await this.prisma.event.findUnique({ where: { id: eventId } });
     if (!existing) throw new ApplicationError(404, 'EVENT_NOT_FOUND', 'Event not found.');
     this.policy.assertMutable(actor, existing, Permission.EVENT_EDIT);
+    const { facts, ...eventInput } = input;
     const event = await this.prisma.$transaction(async (transaction) => {
       const updated = await transaction.event.update({
         where: { id: eventId },
         data: {
-          ...input,
-          configuration: input.configuration as Prisma.InputJsonValue | undefined,
+          ...eventInput,
+          configuration: eventInput.configuration as Prisma.InputJsonValue | undefined,
           startAt:
-            input.startAt === null ? null : input.startAt ? new Date(input.startAt) : undefined,
-          endAt: input.endAt === null ? null : input.endAt ? new Date(input.endAt) : undefined,
+            eventInput.startAt === null
+              ? null
+              : eventInput.startAt
+                ? new Date(eventInput.startAt)
+                : undefined,
+          endAt:
+            eventInput.endAt === null
+              ? null
+              : eventInput.endAt
+                ? new Date(eventInput.endAt)
+                : undefined,
         },
       });
+      if (facts) {
+        const keys = facts.map(({ key }) => key);
+        await transaction.eventFact.deleteMany({
+          where: {
+            eventId,
+            sourceType: 'USER_INPUT',
+            ...(keys.length > 0 ? { key: { notIn: keys } } : {}),
+          },
+        });
+        for (const fact of facts) {
+          await transaction.eventFact.upsert({
+            where: { eventId_key: { eventId, key: fact.key } },
+            create: {
+              eventId,
+              key: fact.key,
+              value: fact.value,
+              sourceType: 'USER_INPUT',
+              sourceUserId: actor.userId,
+              confidence: fact.confidence,
+              precedence: 300,
+            },
+            update: {
+              value: fact.value,
+              sourceType: 'USER_INPUT',
+              sourceDocumentId: null,
+              sourcePage: null,
+              sourceSection: null,
+              sourceUserId: actor.userId,
+              confidence: fact.confidence,
+              precedence: 300,
+            },
+          });
+        }
+      }
       const result = this.completeness.evaluate(updated);
       const status = ['PUBLISHED', 'CANCELLED', 'ARCHIVED'].includes(updated.status)
         ? updated.status
@@ -228,7 +272,7 @@ export class UpdateEventDetailsHandler implements ICommandHandler<UpdateEventDet
           entityType: 'Event',
           entityId: eventId,
           requestId,
-          metadata: { fields: Object.keys(input) },
+          metadata: { fields: Object.keys(input), dynamicDetails: facts?.length },
         },
       });
       return finalized;
@@ -447,6 +491,7 @@ export class GetEventsHandler implements IQueryHandler<GetEventsQuery> {
       ...(and.length ? { AND: and } : {}),
     };
     const records = await this.prisma.event.findMany({
+      relationLoadStrategy: 'join',
       where,
       take: input.limit + 1,
       ...(input.cursor ? { skip: 1, cursor: { id: input.cursor } } : {}),
@@ -489,6 +534,7 @@ export class GetEventHandler implements IQueryHandler<GetEventQuery> {
 
   async execute({ actor, eventId }: GetEventQuery) {
     const event = await this.prisma.event.findUnique({
+      relationLoadStrategy: 'join',
       where: { id: eventId },
       include: eventInclude,
     });
