@@ -187,6 +187,26 @@ describe('AuthService account settings', () => {
 describe('AuthService platform sessions', () => {
   afterEach(() => vi.useRealTimers());
 
+  it('does not create application cookies for a disabled account', async () => {
+    const { service, prisma } = createService();
+    prisma.user.findUnique.mockResolvedValueOnce({
+      id: actor.userId,
+      supabaseUserId: actor.supabaseUserId,
+      email: actor.email,
+      firstName: actor.firstName,
+      lastName: actor.lastName,
+      platformRole: null,
+      status: 'DISABLED',
+      memberships: [],
+    });
+    const loginResponse = createResponse();
+
+    await expect(
+      service.login(actor.email, 'password123', loginResponse.response),
+    ).rejects.toMatchObject({ code: 'ACCOUNT_NOT_ACTIVE' });
+    expect(loginResponse.cookie).not.toHaveBeenCalled();
+  });
+
   it('rotates Supabase tokens without extending the absolute 24-hour login', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-09-10T08:00:00.000Z'));

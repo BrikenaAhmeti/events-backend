@@ -104,10 +104,16 @@ export class AuthService {
           'ACCOUNT_NOT_PROVISIONED',
           'This account is not provisioned.',
         );
-      await this.prisma.clientMembership.updateMany({
-        where: { userId: user.id, status: 'INVITED' },
-        data: { status: 'ACTIVE', joinedAt: new Date() },
-      });
+      await this.prisma.$transaction([
+        this.prisma.user.update({
+          where: { id: user.id },
+          data: { status: 'ACTIVE' },
+        }),
+        this.prisma.clientMembership.updateMany({
+          where: { userId: user.id, status: 'INVITED' },
+          data: { status: 'ACTIVE', joinedAt: new Date() },
+        }),
+      ]);
     }
     const user = await this.resolveApplicationUser(result.session.access_token);
     this.writeSession(response, result.session, Date.now() + PLATFORM_SESSION_TTL_MS);
