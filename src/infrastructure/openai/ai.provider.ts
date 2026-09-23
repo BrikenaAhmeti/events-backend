@@ -20,6 +20,12 @@ export type EventExtractionCandidate = {
   };
   facts: Array<{ key: string; value: string; confidence: number }>;
   schedule: Array<{ title: string; startAt: string; endAt?: string; location?: string }>;
+  guests?: Array<{
+    fullName: string;
+    email: string | null;
+    company?: string | null;
+    guestGroup?: string | null;
+  }>;
 };
 
 export type GroundedAnswerInput = {

@@ -45,7 +45,35 @@ describe('EventMutationPolicyService', () => {
     ).toBe(false);
   });
 
-  it('locks past events even for a client administrator', () => {
+  it('allows staff to change their own ongoing events', () => {
+    expect(
+      service.canMutate(
+        staff,
+        {
+          ...upcoming,
+          startAt: new Date(Date.now() - 86_400_000),
+          endAt: new Date(Date.now() + 86_400_000),
+        },
+        Permission.EVENT_EDIT,
+      ),
+    ).toBe(true);
+  });
+
+  it('locks past events for staff', () => {
+    expect(
+      service.canMutate(
+        staff,
+        {
+          ...upcoming,
+          startAt: new Date(Date.now() - 172_800_000),
+          endAt: new Date(Date.now() - 86_400_000),
+        },
+        Permission.EVENT_EDIT,
+      ),
+    ).toBe(false);
+  });
+
+  it('allows a client administrator to manage past events from another creator', () => {
     const administrator: AuthenticatedActor = {
       ...staff,
       userId: 'admin-a',
@@ -61,6 +89,25 @@ describe('EventMutationPolicyService', () => {
           endAt: new Date(Date.now() - 86_400_000),
         },
         Permission.EVENT_DELETE,
+      ),
+    ).toBe(true);
+  });
+
+  it('keeps cancelled events closed for administrators', () => {
+    const administrator: AuthenticatedActor = {
+      ...staff,
+      userId: 'admin-a',
+      memberships: [{ ...staff.memberships[0], role: 'CLIENT_ADMIN', permissions: [] }],
+    };
+    expect(
+      service.canMutate(
+        administrator,
+        {
+          ...upcoming,
+          createdByUserId: 'staff-b',
+          status: EventStatus.CANCELLED,
+        },
+        Permission.EVENT_EDIT,
       ),
     ).toBe(false);
   });

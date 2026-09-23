@@ -7,6 +7,43 @@ import type { FieldEncryptionService } from '../../../common/security/field-encr
 import { ConciergeService, type ConciergeStreamEvent } from './concierge.service';
 
 describe('ConciergeService streaming', () => {
+  it('shows the completed event setup and new organizer messages as one chat history', async () => {
+    const actor: AuthenticatedActor = {
+      userId: 'user-a',
+      supabaseUserId: 'identity-a',
+      email: 'admin@example.test',
+      firstName: 'Elena',
+      lastName: 'Hart',
+      platformRole: 'SUPER_ADMIN',
+      memberships: [],
+    };
+    const setupAt = new Date('2027-10-01T10:00:00Z');
+    const organizerAt = new Date('2027-10-02T10:00:00Z');
+    const prisma = {
+      event: { findUnique: vi.fn().mockResolvedValue({ id: 'event-a', clientId: 'client-a' }) },
+      conversation: {
+        findFirst: vi.fn().mockImplementation(({ where }: { where: { type: string } }) =>
+          Promise.resolve(where.type === 'EVENT_SETUP'
+            ? { messages: [{ id: 'setup-message', role: 'USER', content: 'The conference is in Lisbon.', createdAt: setupAt }] }
+            : { id: 'organizer-a', messages: [{ id: 'organizer-message', role: 'CONCIERGE', content: 'Ready to publish.', createdAt: organizerAt }] }),
+        ),
+      },
+    } as unknown as PrismaService;
+    const service = new ConciergeService(
+      prisma,
+      {} as AiProvider,
+      {} as EventKnowledgeRepository,
+      new AuthorizationService(),
+      {} as FieldEncryptionService,
+    );
+
+    const result = await service.historyPlatform(actor, 'event-a');
+
+    expect(result.messages.map((message) => message.id)).toEqual([
+      'setup-message', 'organizer-message',
+    ]);
+  });
+
   it('publishes progressive answer text and stores the completed message', async () => {
     const now = new Date('2027-10-12T08:00:00Z');
     const event = {

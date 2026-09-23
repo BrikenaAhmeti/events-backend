@@ -11,6 +11,7 @@ import { PrismaService } from '../../../infrastructure/database/prisma.service';
 import { OutboxService } from '../../../infrastructure/jobs/outbox.service';
 import { AuthorizationService } from '../../memberships/application/authorization.service';
 import { Permission } from '../../memberships/domain/permission';
+import { validChatGuests } from '../../guests/application/guest.contracts';
 import { EventCompletenessService } from '../domain/event-completeness.service';
 import { EventLifecycleService } from '../domain/event-lifecycle.service';
 import { EventMutationPolicyService } from '../domain/event-mutation-policy.service';
@@ -75,6 +76,7 @@ export class CreateEventDraftHandler implements ICommandHandler<CreateEventDraft
         eventCompleteness,
       );
     }
+    let setupGuests: ReturnType<typeof validChatGuests>['guests'] = [];
     if (setupSessionId) {
       const setup = await this.prisma.conversation.findFirst({
         where: {
@@ -85,7 +87,7 @@ export class CreateEventDraftHandler implements ICommandHandler<CreateEventDraft
           state: 'ACTIVE',
           eventId: null,
         },
-        select: { id: true },
+        select: { id: true, draft: true },
       });
       if (!setup)
         throw new ApplicationError(
@@ -93,6 +95,11 @@ export class CreateEventDraftHandler implements ICommandHandler<CreateEventDraft
           'EVENT_SETUP_NOT_ACTIVE',
           'This setup conversation is no longer active. Start a new event setup.',
         );
+      const stored = setup.draft;
+      const candidates = stored && typeof stored === 'object' && !Array.isArray(stored) &&
+        'guests' in stored && Array.isArray(stored.guests) ? stored.guests : [];
+      setupGuests = validChatGuests(candidates).guests;
+      if (setupGuests.length) this.authorization.assert(actor, input.clientId, Permission.GUEST_MANAGE);
     }
     const event = await this.prisma.$transaction(async (transaction) => {
       const created = await transaction.event.create({
@@ -130,6 +137,19 @@ export class CreateEventDraftHandler implements ICommandHandler<CreateEventDraft
             location: item.location,
             category: item.category,
           })),
+        });
+      }
+      if (setupGuests.length > 0) {
+        await transaction.guest.createMany({
+          data: setupGuests.map((guest) => ({
+            eventId: created.id,
+            fullName: guest.fullName,
+            email: guest.email,
+            normalizedEmail: guest.email.toLowerCase(),
+            company: guest.company,
+            guestGroup: guest.guestGroup,
+          })),
+          skipDuplicates: true,
         });
       }
       let setupDocumentCount = 0;
@@ -175,6 +195,7 @@ export class CreateEventDraftHandler implements ICommandHandler<CreateEventDraft
           metadata: {
             extractedFacts: facts.length,
             extractedScheduleItems: schedule.length,
+            guests: setupGuests.length,
             setupSessionId,
             setupDocumentCount,
           },
@@ -295,26 +316,28 @@ export class AddScheduleItemHandler implements ICommandHandler<AddScheduleItemCo
     });
     if (!event) throw new ApplicationError(404, 'EVENT_NOT_FOUND', 'Event not found.');
     this.policy.assertMutable(actor, event, Permission.EVENT_EDIT);
-    const item = await this.prisma.scheduleItem.create({
-      data: {
-        ...input,
-        eventId,
-        startAt: new Date(input.startAt),
-        endAt: input.endAt ? new Date(input.endAt) : undefined,
-      },
+    return this.prisma.$transaction(async (transaction) => {
+      const item = await transaction.scheduleItem.create({
+        data: {
+          ...input,
+          eventId,
+          startAt: new Date(input.startAt),
+          endAt: input.endAt ? new Date(input.endAt) : undefined,
+        },
+      });
+      await transaction.auditLog.create({
+        data: {
+          actorUserId: actor.userId,
+          clientId: event.clientId,
+          eventId,
+          action: 'SCHEDULE_ITEM_ADDED',
+          entityType: 'ScheduleItem',
+          entityId: item.id,
+          requestId,
+        },
+      });
+      return item;
     });
-    await this.prisma.auditLog.create({
-      data: {
-        actorUserId: actor.userId,
-        clientId: event.clientId,
-        eventId,
-        action: 'SCHEDULE_ITEM_ADDED',
-        entityType: 'ScheduleItem',
-        entityId: item.id,
-        requestId,
-      },
-    });
-    return item;
   }
 }
 

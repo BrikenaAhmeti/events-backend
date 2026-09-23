@@ -26,7 +26,7 @@ import { OrganizerExtractionService } from '../application/organizer-extraction.
 import { EventSetupAnalysisService } from '../application/event-setup-analysis.service';
 
 const questionSchema = z.object({ message: z.string().trim().min(1).max(4_000) });
-const sourceSchema = z.object({ text: z.string().trim().min(10).max(80_000) });
+const sourceSchema = z.object({ text: z.string().trim().min(1).max(80_000) });
 
 @ApiTags('Concierge')
 @Controller()

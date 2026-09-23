@@ -7,12 +7,14 @@ import { EventCompletenessService } from '../domain/event-completeness.service';
 import { EventLifecycleService } from '../domain/event-lifecycle.service';
 import { EventMutationPolicyService } from '../domain/event-mutation-policy.service';
 import {
+  AddScheduleItemHandler,
   CreateEventDraftHandler,
   GetEventsHandler,
   PublishEventHandler,
   UpdateEventDetailsHandler,
 } from './event.handlers';
 import {
+  AddScheduleItemCommand,
   CreateEventDraftCommand,
   GetEventsQuery,
   PublishEventCommand,
@@ -67,6 +69,47 @@ const readyInput = {
 };
 
 describe('CreateEventDraftHandler', () => {
+  it('saves guests collected in the setup chat when creating the event', async () => {
+    const createGuests = vi.fn().mockResolvedValue({ count: 2 });
+    const transaction = {
+      event: { create: vi.fn().mockResolvedValue(readyEvent) },
+      guest: { createMany: createGuests },
+      conversation: { update: vi.fn().mockResolvedValue({ id: 'setup-a' }) },
+      document: { findMany: vi.fn().mockResolvedValue([]) },
+      auditLog: { create: vi.fn().mockResolvedValue({ id: 'audit-a' }) },
+    };
+    const prisma = {
+      conversation: {
+        findFirst: vi.fn().mockResolvedValue({
+          id: 'setup-a',
+          draft: { guests: [
+            { fullName: 'Alex Morgan', email: 'Alex@Example.test' },
+            { fullName: 'Sam Lee', email: 'sam@example.test' },
+          ] },
+        }),
+      },
+      $transaction: vi.fn((work: (value: typeof transaction) => unknown) => work(transaction)),
+    } as unknown as PrismaService;
+    const handler = new CreateEventDraftHandler(
+      prisma,
+      new AuthorizationService(),
+      new EventCompletenessService(),
+    );
+
+    await handler.execute(new CreateEventDraftCommand(actor, 'request-guests', {
+      ...readyInput,
+      setupSessionId: '9f47fbca-c63c-4ea0-af61-c74390c238b8',
+    }));
+
+    expect(createGuests).toHaveBeenCalledWith(expect.objectContaining({
+      skipDuplicates: true,
+      data: [
+        expect.objectContaining({ fullName: 'Alex Morgan', normalizedEmail: 'alex@example.test' }),
+        expect.objectContaining({ fullName: 'Sam Lee', normalizedEmail: 'sam@example.test' }),
+      ],
+    }));
+  });
+
   it('persists reviewed facts and schedule items in the event transaction', async () => {
     const databaseTransaction = {
       event: {
@@ -353,7 +396,87 @@ describe('UpdateEventDetailsHandler', () => {
   });
 });
 
+describe('AddScheduleItemHandler', () => {
+  it('saves the schedule item and its audit record in one transaction', async () => {
+    const item = {
+      id: 'schedule-a',
+      eventId: 'event-a',
+      title: 'Opening session',
+      startAt: new Date('2027-10-12T09:00:00.000Z'),
+    };
+    const databaseTransaction = {
+      scheduleItem: { create: vi.fn().mockResolvedValue(item) },
+      auditLog: { create: vi.fn().mockResolvedValue({ id: 'audit-a' }) },
+    };
+    const prisma = {
+      event: {
+        findUnique: vi.fn().mockResolvedValue({
+          ...readyEvent,
+          createdByUserId: actor.userId,
+        }),
+      },
+      $transaction: vi.fn((work: (transaction: typeof databaseTransaction) => unknown) =>
+        work(databaseTransaction),
+      ),
+    } as unknown as PrismaService;
+    const authorization = new AuthorizationService();
+    const handler = new AddScheduleItemHandler(
+      prisma,
+      new EventMutationPolicyService(authorization, new EventLifecycleService()),
+    );
+
+    await expect(
+      handler.execute(
+        new AddScheduleItemCommand(actor, 'request-schedule', 'event-a', {
+          title: 'Opening session',
+          startAt: '2027-10-12T09:00:00.000Z',
+        }),
+      ),
+    ).resolves.toEqual(item);
+    expect(databaseTransaction.scheduleItem.create).toHaveBeenCalledOnce();
+    const auditInput = databaseTransaction.auditLog.create.mock.calls[0]?.[0] as unknown as {
+      data: { action: string; actorUserId: string; entityId: string };
+    };
+    expect(auditInput.data).toMatchObject({
+      action: 'SCHEDULE_ITEM_ADDED',
+      actorUserId: actor.userId,
+      entityId: item.id,
+    });
+  });
+});
+
 describe('GetEventsHandler', () => {
+  it('shows client staff every event in their company without a creator restriction', async () => {
+    const findMany = vi
+      .fn<(input: { where: Record<string, unknown> }) => Promise<unknown[]>>()
+      .mockResolvedValue([]);
+    const prisma = { event: { findMany } } as unknown as PrismaService;
+    const authorization = new AuthorizationService();
+    const lifecycle = new EventLifecycleService();
+    const handler = new GetEventsHandler(
+      prisma,
+      authorization,
+      new EventCompletenessService(),
+      lifecycle,
+      new EventMutationPolicyService(authorization, lifecycle),
+    );
+    const staffActor: AuthenticatedActor = {
+      ...actor,
+      memberships: [
+        {
+          clientId: 'client-a',
+          role: 'CLIENT_STAFF',
+          status: 'ACTIVE',
+          permissions: [Permission.EVENT_READ],
+        },
+      ],
+    };
+
+    await handler.execute(new GetEventsQuery(staffActor, { clientId: 'client-a', limit: 20 }));
+
+    expect(findMany.mock.calls[0]?.[0].where).toEqual({ clientId: 'client-a' });
+  });
+
   it('combines selected lifecycle and workflow statuses as multi-value filters', async () => {
     const findMany = vi.fn().mockResolvedValue([]);
     const prisma = { event: { findMany } } as unknown as PrismaService;

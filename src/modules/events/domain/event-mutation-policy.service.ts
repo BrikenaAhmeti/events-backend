@@ -23,29 +23,36 @@ export class EventMutationPolicyService {
 
   canMutate(actor: AuthenticatedActor, event: ManagedEvent, permission: Permission): boolean {
     if (!this.authorization.can(actor, event.clientId, permission)) return false;
-    if (!this.lifecycle.isMutable(event)) return false;
-    if (actor.platformRole === 'SUPER_ADMIN') return true;
+    if (actor.platformRole === 'SUPER_ADMIN')
+      return this.lifecycle.isAdministrativelyMutable(event);
     const membership = actor.memberships.find(
       (item) => item.clientId === event.clientId && item.status === 'ACTIVE',
     );
-    return membership?.role === 'CLIENT_ADMIN' || event.createdByUserId === actor.userId;
+    if (membership?.role === 'CLIENT_ADMIN') return this.lifecycle.isAdministrativelyMutable(event);
+    return event.createdByUserId === actor.userId && this.lifecycle.isMutable(event);
   }
 
   assertMutable(actor: AuthenticatedActor, event: ManagedEvent, permission: Permission): void {
     this.authorization.assert(actor, event.clientId, permission);
+    if (this.canMutate(actor, event, permission)) return;
+    if (!this.lifecycle.isAdministrativelyMutable(event)) {
+      throw new ApplicationError(
+        409,
+        'EVENT_CHANGES_CLOSED',
+        'Cancelled and archived events cannot be changed.',
+      );
+    }
     if (!this.lifecycle.isMutable(event)) {
       throw new ApplicationError(
         409,
         'EVENT_CHANGES_CLOSED',
-        'Only upcoming events can be changed or deleted.',
+        'Staff can change only unscheduled, upcoming, or ongoing events.',
       );
     }
-    if (!this.canMutate(actor, event, permission)) {
-      throw new ApplicationError(
-        403,
-        'EVENT_OWNERSHIP_REQUIRED',
-        'Staff can change only events they created.',
-      );
-    }
+    throw new ApplicationError(
+      403,
+      'EVENT_OWNERSHIP_REQUIRED',
+      'Staff can change only events they created.',
+    );
   }
 }

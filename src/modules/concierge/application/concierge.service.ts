@@ -96,7 +96,23 @@ export class ConciergeService {
   async historyPlatform(actor: AuthenticatedActor, eventId: string) {
     const event = await this.loadEvent(eventId);
     this.authorization.assert(actor, event.clientId, Permission.EVENT_READ);
-    return this.history(eventId, 'ORGANIZER', actor.userId);
+    const organizer = await this.history(eventId, 'ORGANIZER', actor.userId);
+    const setup = await this.prisma.conversation.findFirst({
+      where: { eventId, type: 'EVENT_SETUP', userId: actor.userId, state: 'COMPLETED' },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        messages: {
+          orderBy: { createdAt: 'asc' },
+          take: 100,
+          select: { id: true, role: true, content: true, status: true, createdAt: true },
+        },
+      },
+    });
+    return {
+      ...organizer,
+      messages: [...(setup?.messages ?? []), ...organizer.messages]
+        .sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime()),
+    };
   }
 
   async historyGuest(actor: GuestActor) {

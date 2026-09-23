@@ -22,7 +22,7 @@ const actor: AuthenticatedActor = {
 };
 
 describe('EventSetupAnalysisService', () => {
-  it('starts a persisted setup conversation and offers file or step-by-step entry', async () => {
+  it('starts a persisted setup conversation that invites event and guest details directly', async () => {
     const findUnique = vi.fn().mockResolvedValue({ id: clientId, name: 'Northstar Events' });
     const createConversation = vi.fn().mockResolvedValue({
       id: sessionId,
@@ -33,7 +33,7 @@ describe('EventSetupAnalysisService', () => {
           id: 'welcome-a',
           role: 'CONCIERGE',
           content:
-            'Let’s set up a new event for Northstar Events. I can guide you one short question at a time, or you can ask for a file template to fill in and upload here.',
+            'Let’s set up a new event for Northstar Events. Tell me what you know about its purpose, dates, location, and organizer. You can add guest names and email addresses here too.',
           metadata: {},
           createdAt: new Date('2027-01-01T10:00:00Z'),
         },
@@ -56,7 +56,7 @@ describe('EventSetupAnalysisService', () => {
 
     expect(result.sessionId).toBe(sessionId);
     expect(result.resumed).toBe(false);
-    expect(result.messages[0]?.content).toContain('file template');
+    expect(result.messages[0]?.content).toContain('guest names and email addresses');
     const createInput = createConversation.mock.calls[0]?.[0] as unknown as {
       data: { type: string; userId: string };
     };
@@ -98,7 +98,7 @@ describe('EventSetupAnalysisService', () => {
     expect(create).toHaveBeenCalledOnce();
   });
 
-  it('offers a persisted fillable template when the creator asks for a file', async () => {
+  it('offers a persisted fillable template when the creator asks for one', async () => {
     const createMessage = vi
       .fn<
         (input: {
@@ -141,14 +141,14 @@ describe('EventSetupAnalysisService', () => {
 
     const result = await service.analyze(
       actor,
-      { clientId, sessionId, text: 'file' },
+      { clientId, sessionId, text: 'template' },
       undefined,
       'request-template',
     );
 
     expect(result.template).toEqual({
       kind: 'EVENT_BRIEF',
-      fileName: 'feliam-event-brief-template.txt',
+      fileName: 'feliam-event-brief-template.docx',
     });
     expect(createMessage.mock.calls[1]?.[0].data.metadata).toEqual({
       setupTemplate: 'EVENT_BRIEF',
@@ -162,6 +162,10 @@ describe('EventSetupAnalysisService', () => {
       event: { name: 'Leadership Forum', category: 'CONFERENCE', venue: 'Riverside Hall' },
       facts: [],
       schedule: [],
+      guests: [
+        { fullName: 'Alex Morgan', email: 'alex@example.test' },
+        { fullName: 'Sam Lee', email: null },
+      ],
     });
     const completenessResult = {
       score: 33,
@@ -247,6 +251,7 @@ describe('EventSetupAnalysisService', () => {
     expect(result.message).toBe(
       'I captured the venue. Choose the start and end date and time below. I’ll include your local timezone.',
     );
+    expect(result.guests).toEqual([{ fullName: 'Alex Morgan', email: 'alex@example.test' }]);
     expect(updateConversation).toHaveBeenCalledWith(
       expect.objectContaining({ where: { id: sessionId } }),
     );

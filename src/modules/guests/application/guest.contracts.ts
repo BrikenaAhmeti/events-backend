@@ -21,6 +21,26 @@ export const guestSchema = z.object({
 
 export const importGuestsSchema = z.object({ rows: z.array(guestSchema).min(1).max(5_000) });
 
+export const chatGuestSchema = guestSchema.pick({
+  fullName: true,
+  email: true,
+  company: true,
+  guestGroup: true,
+});
+
+export function validChatGuests(candidates: Array<unknown> = []) {
+  const guests = new Map<string, z.infer<typeof chatGuestSchema>>();
+  const missingEmails: string[] = [];
+  for (const candidate of candidates) {
+    const result = chatGuestSchema.safeParse(candidate);
+    if (result.success) guests.set(result.data.email, result.data);
+    else if (candidate && typeof candidate === 'object' && 'fullName' in candidate &&
+      typeof candidate.fullName === 'string' && candidate.fullName.trim())
+      missingEmails.push(candidate.fullName.trim());
+  }
+  return { guests: [...guests.values()], missingEmails };
+}
+
 export const updateGuestSchema = guestSchema
   .partial()
   .refine((value) => Object.keys(value).length > 0);

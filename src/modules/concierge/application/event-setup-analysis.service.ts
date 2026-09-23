@@ -20,6 +20,7 @@ import {
 } from '../../events/domain/event-completeness.service';
 import { AuthorizationService } from '../../memberships/application/authorization.service';
 import { Permission } from '../../memberships/domain/permission';
+import { chatGuestSchema, validChatGuests } from '../../guests/application/guest.contracts';
 
 const setupSchema = z.object({
   clientId: z.uuid(),
@@ -37,6 +38,7 @@ const setupDraftSchema = z.object({
   event: updateEventSchema.default({}),
   facts: z.array(eventFactInputSchema).max(200).default([]),
   schedule: z.array(scheduleItemSchema).max(200).default([]),
+  guests: z.array(chatGuestSchema).max(500).default([]),
   suggestedName: z.string().max(160).default(''),
   nameWasProvided: z.boolean().default(false),
 });
@@ -121,7 +123,7 @@ export class EventSetupAnalysisService {
         });
     const resumed = Boolean(session);
     if (!session) {
-      const welcome = `Let’s set up a new event for ${client.name}. I can guide you through a few short chat steps, grouping related answers together, or you can ask for a file template to fill in and upload here.`;
+      const welcome = `Let’s set up a new event for ${client.name}. Tell me what you know about its purpose, dates, location, and organizer. You can add guest names and email addresses here too. Send everything in one message or several, or attach a file. I’ll ask for any required details that are missing.`;
       session = await this.prisma.conversation.create({
         data: {
           clientId: client.id,
@@ -222,10 +224,11 @@ export class EventSetupAnalysisService {
         completeness: this.completeness.evaluate(this.projectEvent(previous.event)),
         facts: previous.facts,
         schedule: previous.schedule,
+        guests: previous.guests,
         extractedFacts: previous.facts.length,
         extractedScheduleItems: previous.schedule.length,
         file: null,
-        template: { kind: 'EVENT_BRIEF', fileName: 'feliam-event-brief-template.txt' },
+        template: { kind: 'EVENT_BRIEF', fileName: 'feliam-event-brief-template.docx' },
       };
     }
 
@@ -239,7 +242,7 @@ export class EventSetupAnalysisService {
       fileText = extractedFile.text;
     }
     const meaningfulSource = [input.text, fileText].filter(Boolean).join('').trim();
-    if (meaningfulSource.length < 10) {
+    if (!meaningfulSource) {
       throw new ApplicationError(
         400,
         'EVENT_SOURCE_REQUIRED',
@@ -303,6 +306,11 @@ export class EventSetupAnalysisService {
     });
     const facts = this.mergeFacts(previous.facts, extractedFacts);
     const schedule = this.mergeSchedule(previous.schedule, extractedSchedule);
+    const parsedGuests = validChatGuests(extracted.guests ?? []);
+    const mayManageGuests = this.authorization.can(actor, input.clientId, Permission.GUEST_MANAGE);
+    const guests = mayManageGuests
+      ? validChatGuests([...previous.guests, ...parsedGuests.guests]).guests.slice(0, 500)
+      : [];
     const suggestedName =
       event.name ?? (previous.suggestedName || this.suggestName(event, client.name));
     const completeness = this.completeness.evaluate(this.projectEvent(event));
@@ -312,8 +320,15 @@ export class EventSetupAnalysisService {
       nameWasProvided: Boolean(event.name),
       facts,
       schedule,
+      guests,
     };
-    const message = this.buildReply(extracted.reply, completeness);
+    const message = this.buildReply(extracted.reply, completeness) +
+      (parsedGuests.missingEmails.length && completeness.ready
+        ? ` I still need email addresses for: ${parsedGuests.missingEmails.join(', ')}.`
+        : '') +
+      (parsedGuests.guests.length && !mayManageGuests
+        ? ' A team member with guest management access will need to add these guests.'
+        : '');
     const assistantMessage = await this.prisma.$transaction(async (transaction) => {
       await transaction.conversation.update({
         where: { id: session.id },
@@ -338,6 +353,7 @@ export class EventSetupAnalysisService {
       completeness,
       facts,
       schedule,
+      guests,
       extractedFacts: facts.length,
       extractedScheduleItems: schedule.length,
       file: savedFile,
@@ -348,13 +364,13 @@ export class EventSetupAnalysisService {
     const parsed = setupDraftSchema.safeParse(value);
     return parsed.success
       ? parsed.data
-      : { event: {}, facts: [], schedule: [], suggestedName: '', nameWasProvided: false };
+      : { event: {}, facts: [], schedule: [], guests: [], suggestedName: '', nameWasProvided: false };
   }
 
   private requestsTemplate(text: string): boolean {
     const normalized = text.toLowerCase().trim();
     if (normalized.length > 160) return false;
-    return /\b(file|template|spreadsheet|document)\b/.test(normalized);
+    return /\btemplate\b|\b(?:blank|sample|download)\s+(?:file|document|spreadsheet)\b/.test(normalized);
   }
 
   private projectEvent(event: SetupDraft['event']) {
@@ -383,7 +399,7 @@ export class EventSetupAnalysisService {
       .join(' ')
       .trim();
     if (completeness.ready) {
-      return `${acknowledgement || 'I captured the event details.'} Everything required is ready. Review the summary and tell me if you want to change anything.`;
+      return `${acknowledgement || 'I captured the event details.'} Everything required is ready. You can add guest names and email addresses here, correct anything, or continue.`;
     }
     const missing = new Set(completeness.missing);
     let question: string;
