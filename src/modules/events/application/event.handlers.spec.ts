@@ -466,6 +466,34 @@ describe('AddScheduleItemHandler', () => {
 });
 
 describe('GetEventsHandler', () => {
+  it('exposes document upload separately from general event editing', async () => {
+    const authorization = new AuthorizationService();
+    const lifecycle = new EventLifecycleService();
+    const staffActor: AuthenticatedActor = {
+      ...actor,
+      memberships: [{
+        clientId: 'client-a', role: 'CLIENT_STAFF', status: 'ACTIVE',
+        permissions: [Permission.EVENT_READ, Permission.DOCUMENT_UPLOAD],
+      }],
+    };
+    const future = new Date(Date.now() + 86_400_000);
+    const handler = new GetEventsHandler(
+      { event: { findMany: vi.fn().mockResolvedValue([{
+        ...readyEvent, createdByUserId: staffActor.userId,
+        startAt: future, endAt: new Date(future.getTime() + 86_400_000),
+      }]) } } as unknown as PrismaService,
+      authorization,
+      new EventCompletenessService(),
+      lifecycle,
+      new EventMutationPolicyService(authorization, lifecycle),
+    );
+
+    const result = await handler.execute(new GetEventsQuery(staffActor, { clientId: 'client-a', limit: 20 }));
+
+    expect(result.items[0]?.capabilities.canEdit).toBe(false);
+    expect(result.items[0]?.capabilities.canUploadDocuments).toBe(true);
+  });
+
   it('shows client staff every event in their company without a creator restriction', async () => {
     const findMany = vi
       .fn<(input: { where: Record<string, unknown> }) => Promise<unknown[]>>()

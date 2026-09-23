@@ -36,7 +36,7 @@ The API listens on `http://localhost:3000/api/v1`. Swagger is available at `http
 
 ## Vercel deployment
 
-The checked-in Vercel configuration uses the NestJS framework preset, uses the Hobby plan's five-minute Fluid compute limit for streamed and post-response work, and generates Prisma Client during installation.
+The checked-in Vercel configuration uses the NestJS framework preset and the Hobby plan's five-minute Fluid compute limit for streamed and post-response work. The build command regenerates Prisma Client before compiling NestJS, including when Vercel restores cached dependencies.
 
 1. Create a Vercel project with this backend directory as its root.
 2. Add every required production variable from `.env.example`.
@@ -61,7 +61,7 @@ For SMTP on Vercel, use port `465` or `587`, not port `25`. The durable PostgreS
 
 Set `connection_limit=3` in the pooled `DATABASE_URL` for local development and in the deployed backend's environment. A limit of `1` serializes the events page's list and filter requests as well as the dashboard's parallel queries. Keep the other connection options intact and size the limit against the database pooler's capacity and the number of backend instances. The backend runs in `fra1`, alongside the Frankfurt database.
 
-The Prisma client enables [`relationJoins`](https://www.prisma.io/docs/orm/v6/prisma-client/queries/relation-queries#relation-load-strategies-preview). Account permissions, event lists, event details and dashboard cards are loaded with database joins, reducing network round trips without caching authorization. Regenerate the client with `pnpm prisma:generate` after pulling this change; deployment does this through `postinstall`. This client setting needs no database migration.
+The Prisma client enables [`relationJoins`](https://www.prisma.io/docs/orm/v6/prisma-client/queries/relation-queries#relation-load-strategies-preview). Account permissions, event lists, event details and dashboard cards are loaded with database joins, reducing network round trips without caching authorization. `pnpm build` regenerates the client before compilation, so a restored Vercel dependency cache cannot leave an older client type definition in place. This client setting needs no database migration.
 
 Run `pnpm build` and `node scripts/profile-reads.cjs` to measure read latency using the configured database. The probe only reads data and prints timings and query counts. For comparison, use `PROFILE_POOL_SIZE=1 PROFILE_RELATIONS=query node scripts/profile-reads.cjs`, then `PROFILE_POOL_SIZE=3 PROFILE_RELATIONS=join node scripts/profile-reads.cjs`. These overrides only affect the probe. Timings include network latency from the machine running it, not browser rendering or token verification.
 
