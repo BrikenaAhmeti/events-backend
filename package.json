@@ -9,7 +9,7 @@
   },
   "scripts": {
     "dev": "nest start --watch",
-    "build": "nest build",
+    "build": "prisma generate && nest build",
     "postinstall": "prisma generate",
     "start": "node dist/main.js",
     "lint": "eslint \"{src,test,prisma}/**/*.{ts,js}\"",

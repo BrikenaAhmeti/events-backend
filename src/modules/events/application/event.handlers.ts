@@ -538,6 +538,7 @@ export class GetEventsHandler implements IQueryHandler<GetEventsQuery> {
       operationalStatus: this.lifecycle.status(event, now),
       capabilities: {
         canEdit: this.policy.canMutate(actor, event, Permission.EVENT_EDIT),
+        canUploadDocuments: this.policy.canMutate(actor, event, Permission.DOCUMENT_UPLOAD),
         canDelete: this.policy.canMutate(actor, event, Permission.EVENT_DELETE),
         canCancel: this.policy.canMutate(actor, event, Permission.EVENT_DELETE),
       },
@@ -576,6 +577,7 @@ export class GetEventHandler implements IQueryHandler<GetEventQuery> {
       operationalStatus: this.lifecycle.status(event),
       capabilities: {
         canEdit: this.policy.canMutate(actor, event, Permission.EVENT_EDIT),
+        canUploadDocuments: this.policy.canMutate(actor, event, Permission.DOCUMENT_UPLOAD),
         canDelete: this.policy.canMutate(actor, event, Permission.EVENT_DELETE),
         canCancel: this.policy.canMutate(actor, event, Permission.EVENT_DELETE),
       },
