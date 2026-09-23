@@ -55,6 +55,13 @@ export class TeamService {
   async invite(actor: AuthenticatedActor, requestId: string, clientId: string, raw: unknown) {
     this.authorization.assert(actor, clientId, PermissionValues.TEAM_MANAGE);
     const input = inviteStaffSchema.parse(raw);
+    if (input.email === actor.email.toLowerCase()) {
+      throw new ApplicationError(
+        400,
+        'SELF_INVITATION_NOT_ALLOWED',
+        'You cannot invite your own account as a staff member.',
+      );
+    }
     const existing = await this.prisma.user.findUnique({ where: { email: input.email } });
     const supabaseUserId = existing
       ? existing.supabaseUserId
@@ -131,6 +138,12 @@ export class TeamService {
     });
     if (!membership)
       throw new ApplicationError(404, 'MEMBERSHIP_NOT_FOUND', 'Team member not found.');
+    if (membership.userId === actor.userId)
+      throw new ApplicationError(
+        400,
+        'SELF_MEMBERSHIP_CHANGE_NOT_ALLOWED',
+        'You cannot change your own team membership.',
+      );
     if (membership.role === 'CLIENT_ADMIN' && input.status === 'DISABLED')
       throw new ApplicationError(
         400,
@@ -156,6 +169,26 @@ export class TeamService {
           user: { select: { id: true, email: true, firstName: true, lastName: true } },
         },
       });
+      if (input.status === 'ACTIVE') {
+        await transaction.user.update({
+          where: { id: membership.userId },
+          data: { status: 'ACTIVE' },
+        });
+      } else if (input.status === 'DISABLED') {
+        const activeMemberships = await transaction.clientMembership.count({
+          where: {
+            userId: membership.userId,
+            status: 'ACTIVE',
+            id: { not: membershipId },
+          },
+        });
+        if (activeMemberships === 0) {
+          await transaction.user.updateMany({
+            where: { id: membership.userId, platformRole: null },
+            data: { status: 'DISABLED' },
+          });
+        }
+      }
       await transaction.auditLog.create({
         data: {
           actorUserId: actor.userId,
@@ -168,6 +201,56 @@ export class TeamService {
         },
       });
       return updated;
+    });
+  }
+
+  async remove(
+    actor: AuthenticatedActor,
+    requestId: string,
+    clientId: string,
+    membershipId: string,
+  ): Promise<void> {
+    this.authorization.assert(actor, clientId, PermissionValues.TEAM_MANAGE);
+    const membership = await this.prisma.clientMembership.findFirst({
+      where: { id: membershipId, clientId },
+      select: { id: true, userId: true, role: true },
+    });
+    if (!membership)
+      throw new ApplicationError(404, 'MEMBERSHIP_NOT_FOUND', 'Team member not found.');
+    if (membership.userId === actor.userId)
+      throw new ApplicationError(
+        400,
+        'SELF_MEMBERSHIP_CHANGE_NOT_ALLOWED',
+        'You cannot remove your own team membership.',
+      );
+    if (membership.role === 'CLIENT_ADMIN')
+      throw new ApplicationError(
+        400,
+        'ADMIN_REMOVE_RESTRICTED',
+        'Transfer administration before removing this administrator.',
+      );
+
+    await this.prisma.$transaction(async (transaction) => {
+      await transaction.clientMembership.delete({ where: { id: membershipId } });
+      const activeMemberships = await transaction.clientMembership.count({
+        where: { userId: membership.userId, status: 'ACTIVE' },
+      });
+      if (activeMemberships === 0) {
+        await transaction.user.updateMany({
+          where: { id: membership.userId, platformRole: null },
+          data: { status: 'DISABLED' },
+        });
+      }
+      await transaction.auditLog.create({
+        data: {
+          actorUserId: actor.userId,
+          clientId,
+          action: 'CLIENT_STAFF_REMOVED',
+          entityType: 'ClientMembership',
+          entityId: membershipId,
+          requestId,
+        },
+      });
     });
   }
 }

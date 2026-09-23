@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, Param, Patch, Post } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { CurrentActor, CurrentRequestId } from '../../../common/decorators/current-actor.decorator';
 import type { AuthenticatedActor } from '../../../common/types/request.types';
@@ -33,5 +33,16 @@ export class TeamController {
     @Body() body: unknown,
   ) {
     return this.team.update(actor, requestId, clientId, membershipId, body);
+  }
+
+  @Delete(':membershipId')
+  @HttpCode(204)
+  remove(
+    @CurrentActor() actor: AuthenticatedActor,
+    @CurrentRequestId() requestId: string,
+    @Param('clientId') clientId: string,
+    @Param('membershipId') membershipId: string,
+  ) {
+    return this.team.remove(actor, requestId, clientId, membershipId);
   }
 }
