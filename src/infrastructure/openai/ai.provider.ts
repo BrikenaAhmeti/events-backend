@@ -14,6 +14,8 @@ export type EventExtractionCandidate = {
     wifiInformation?: string;
     startAt?: string;
     endAt?: string;
+    startDate?: string;
+    endDate?: string;
     timezone?: string;
     organizerName?: string;
     organizerEmail?: string;
@@ -25,6 +27,7 @@ export type EventExtractionCandidate = {
     email: string | null;
     company?: string | null;
     guestGroup?: string | null;
+    notes?: string | null;
   }>;
 };
 

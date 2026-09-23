@@ -70,14 +70,30 @@ export class ConciergeService {
     });
     if (!guest)
       throw new ApplicationError(403, 'GUEST_ACCESS_DENIED', 'Guest access is not valid.');
+    const otherGuests = await this.prisma.guest.findMany({
+      where: { eventId: actor.eventId, id: { not: guest.id } },
+      select: { fullName: true, email: true },
+    });
+    const otherGuestIdentifiers = otherGuests.flatMap(({ fullName, email }) => [
+      fullName, email,
+      ...fullName.split(/\s+/).filter((part) => part.length >= 4),
+    ]).filter((value) => value.trim().length > 0);
+    if (this.asksAboutOtherGuests(question, otherGuestIdentifiers)) {
+      return this.replyPrivately(
+        event, guest.id, question,
+        'I can help with your own arrangements and shared event details, but I cannot share another guest’s information.',
+        onEvent,
+      );
+    }
     const privateContext = this.needsPrivateContext(question)
       ? [
+          ['Your arrangements', this.encryption.decrypt(guest.notesEncrypted)],
           ['Accommodation', this.encryption.decrypt(guest.accommodationEncrypted)],
           ['Travel', this.encryption.decrypt(guest.travelEncrypted)],
           ['Dietary', this.encryption.decrypt(guest.dietaryEncrypted)],
           ['Accessibility', this.encryption.decrypt(guest.accessibilityEncrypted)],
         ]
-          .filter(([, value]) => value)
+          .filter(([, value]) => value && !this.mentionsOtherGuest(value, otherGuestIdentifiers))
           .map(([label, value]) => `${label}: ${value}`)
           .join('\n')
       : undefined;
@@ -89,6 +105,7 @@ export class ConciergeService {
       audience: 'GUEST',
       guestId: guest.id,
       privateContext,
+      otherGuestIdentifiers,
       onEvent,
     });
   }
@@ -128,6 +145,7 @@ export class ConciergeService {
     userId?: string;
     guestId?: string;
     privateContext?: string;
+    otherGuestIdentifiers?: string[];
     onEvent?: (event: ConciergeStreamEvent) => void;
   }) {
     const conversation = await this.conversation(
@@ -155,36 +173,44 @@ export class ConciergeService {
       const semantic = embedding
         ? await this.knowledge.semanticSearch(input.event.id, embedding)
         : [];
-      const response = await this.ai.answerStream(
-        {
+      const context = {
           audience: input.audience,
           question: input.question,
           eventName: input.event.name,
           timezone: input.event.timezone ?? 'UTC',
-          structuredContext: this.structuredContext(input.event, input.question),
+          structuredContext: this.withoutOtherGuests(
+            this.structuredContext(input.event, input.question), input.otherGuestIdentifiers,
+            input.audience === 'GUEST',
+          ),
           untrustedDocumentContext: semantic
             .map(({ content }) => content)
+            .filter((content) => !this.mentionsOtherGuest(content, input.otherGuestIdentifiers) &&
+              (input.audience !== 'GUEST' || !this.containsGuestRosterData(content)))
             .join('\n---\n')
             .slice(0, 20_000),
           privateGuestContext: input.privateContext,
           requestId: input.requestId,
-        },
-        (delta) =>
-          this.publish(input, {
-            type: 'delta',
-            messageId: responseMessageId,
-            delta,
-          }),
-      );
+        };
+      const response = input.audience === 'GUEST'
+        ? await this.ai.answer(context)
+        : await this.ai.answerStream(context, (delta) =>
+            this.publish(input, { type: 'delta', messageId: responseMessageId, delta }),
+          );
       const answer = answerSchema.safeParse(response.answer);
+      const safeAnswer = answer.success &&
+        !this.mentionsOtherGuest(answer.data, input.otherGuestIdentifiers)
+        ? answer.data
+        : input.audience === 'GUEST'
+          ? 'I cannot share another guest’s information. Please ask the organizer if you need help.'
+          : 'I do not have that information for this event yet.';
+      if (input.audience === 'GUEST')
+        this.publish(input, { type: 'delta', messageId: responseMessageId, delta: safeAnswer });
       const message = await this.prisma.conversationMessage.create({
         data: {
           id: responseMessageId,
           conversationId: conversation.id,
           role: 'CONCIERGE',
-          content: answer.success
-            ? answer.data
-            : 'I do not have that information for this event yet.',
+          content: safeAnswer,
           status: 'COMPLETE',
           metadata: response.usage ?? {},
         },
@@ -292,7 +318,57 @@ export class ConciergeService {
   }
 
   private needsPrivateContext(question: string): boolean {
-    return /\b(my|mine|i|room|flight|transfer|dietary|allerg|accessib|hotel)\b/i.test(question);
+    return /\b(my|mine|i|room|flight|transfer|dietary|allerg|accessib|hotel|seat|table|arrangement|assignment|entry|door)\b/i.test(question);
+  }
+
+  private mentionsOtherGuest(value: string, identifiers: string[] | undefined): boolean {
+    const normalized = value.toLocaleLowerCase();
+    return Boolean(identifiers?.some((identifier) =>
+      normalized.includes(identifier.toLocaleLowerCase()),
+    ));
+  }
+
+  private withoutOtherGuests(
+    value: string, identifiers: string[] | undefined, guestAudience: boolean,
+  ): string {
+    if (!guestAudience) return value;
+    return value.split('\n')
+      .filter((line) => !this.mentionsOtherGuest(line, identifiers) &&
+        !this.containsGuestRosterData(line))
+      .join('\n');
+  }
+
+  private containsGuestRosterData(value: string): boolean {
+    return /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}|\b(guests?|attendees?|participants?|delegates?|seating chart|seat assignment|assigned seating|table assignment|room allocation|rooming list|personal details)\b/i.test(value);
+  }
+
+  private asksAboutOtherGuests(question: string, identifiers: string[]): boolean {
+    return this.mentionsOtherGuest(question, identifiers) ||
+      /\b(other guests?|another guest|guest list|attendee list|who else|who is (coming|attending|sitting)|who'?s (coming|attending|sitting)|everyone else|someone else|their (seat|room|email|phone|details)|near me|next to me|beside me|my neighbou?r|my room ?mate|table ?mates?)\b|\b(all|other|another|list of|names of)\s+(the\s+)?(guests?|attendees?|participants?)\b|\b(guest|attendee|participant)\s+(names?|emails?|contacts?|seats?|rooms?)\b/i.test(question);
+  }
+
+  private async replyPrivately(
+    event: Awaited<ReturnType<ConciergeService['loadEvent']>>,
+    guestId: string,
+    question: string,
+    reply: string,
+    onEvent?: (event: ConciergeStreamEvent) => void,
+  ) {
+    const conversation = await this.conversation(event, 'GUEST', undefined, guestId);
+    await this.prisma.conversationMessage.create({
+      data: { conversationId: conversation.id, role: 'USER', content: question, status: 'COMPLETE' },
+    });
+    const message = await this.prisma.conversationMessage.create({
+      data: { conversationId: conversation.id, role: 'CONCIERGE', content: reply, status: 'COMPLETE' },
+    });
+    onEvent?.({
+      type: 'message',
+      message: {
+        id: message.id, role: 'CONCIERGE', content: message.content,
+        status: 'COMPLETE', createdAt: message.createdAt,
+      },
+    });
+    return { conversationId: conversation.id, message };
   }
 
   private platformAudience(

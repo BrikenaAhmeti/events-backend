@@ -15,6 +15,7 @@ type GuestInvitationEmailInput = {
   startAt: Date | null;
   endAt: Date | null;
   timezone: string | null;
+  personalDetails?: string | null;
   invitationUrl: string;
   qrPng: Buffer;
 };
@@ -58,6 +59,9 @@ export function buildGuestInvitationEmail(input: GuestInvitationEmailInput): Ema
         ? [{ label: 'Ends', value: formatDate(input.endAt, input.timezone) }]
         : []),
       { label: 'Location', value: location || 'To be confirmed' },
+      ...(input.personalDetails?.trim()
+        ? [{ label: 'Your arrangements', value: input.personalDetails.trim() }]
+        : []),
     ],
     action: { label: 'Open event invitation', url: input.invitationUrl },
     afterAction:

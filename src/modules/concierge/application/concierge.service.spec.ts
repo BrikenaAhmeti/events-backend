@@ -1,4 +1,4 @@
-import type { AuthenticatedActor } from '../../../common/types/request.types';
+import type { AuthenticatedActor, GuestActor } from '../../../common/types/request.types';
 import type { PrismaService } from '../../../infrastructure/database/prisma.service';
 import type { AiProvider } from '../../../infrastructure/openai/ai.provider';
 import type { EventKnowledgeRepository } from '../../knowledge/infrastructure/event-knowledge.repository';
@@ -128,5 +128,104 @@ describe('ConciergeService streaming', () => {
       content: 'Doors open at 08:00.',
       status: 'COMPLETE',
     });
+  });
+
+  it('refuses another guest’s details before sending any context to the AI', async () => {
+    const actor: GuestActor = { eventId: 'event-a', guestId: 'guest-a', sessionId: 'session-a' };
+    const createMessage = vi.fn().mockImplementation(({ data }) =>
+      Promise.resolve({ id: 'message-a', ...data, createdAt: new Date() }),
+    );
+    const prisma = {
+      event: { findUnique: vi.fn().mockResolvedValue({ id: actor.eventId, clientId: 'client-a' }) },
+      guest: {
+        findFirst: vi.fn().mockResolvedValue({ id: actor.guestId, notesEncrypted: null }),
+        findMany: vi.fn().mockResolvedValue([{ fullName: 'Alex Morgan', email: 'alex@example.test' }]),
+      },
+      conversation: { findFirst: vi.fn().mockResolvedValue({ id: 'conversation-a' }) },
+      conversationMessage: { create: createMessage },
+    } as unknown as PrismaService;
+    const answer = vi.fn();
+    const service = new ConciergeService(
+      prisma,
+      { answer } as unknown as AiProvider,
+      {} as EventKnowledgeRepository,
+      new AuthorizationService(),
+      {} as FieldEncryptionService,
+    );
+    const events: ConciergeStreamEvent[] = [];
+
+    const result = await service.askGuest(
+      actor, 'Where is Alex Morgan sitting?', 'request-a', (event) => events.push(event),
+    );
+
+    expect(answer).not.toHaveBeenCalled();
+    expect(result.message.content).toContain('cannot share another guest');
+    expect(events).toHaveLength(1);
+    expect(events[0]?.type).toBe('message');
+    const nearby = await service.askGuest(actor, 'Who is next to me?', 'request-nearby');
+    expect(nearby.message.content).toContain('cannot share another guest');
+    expect(answer).not.toHaveBeenCalled();
+  });
+
+  it('uses only the current guest’s private note and excludes other guest document content', async () => {
+    const actor: GuestActor = { eventId: 'event-a', guestId: 'guest-a', sessionId: 'session-a' };
+    const event = {
+      id: actor.eventId, clientId: 'client-a', name: 'Leadership Forum',
+      timezone: 'Europe/Rome', description: null, destination: 'Rome', venue: null,
+      venueAddress: null, venueDetails: null, restroomInformation: null,
+      accessibilityInformation: null, parkingInformation: null, wifiInformation: null,
+      startAt: null, endAt: null, schedule: [], facts: [], contacts: [], locations: [],
+    };
+    const createMessage = vi.fn().mockImplementation(({ data }: { data: Record<string, unknown> }) =>
+      Promise.resolve({ id: typeof data.id === 'string' ? data.id : 'message-a', ...data, createdAt: new Date() }),
+    );
+    const prisma = {
+      event: { findUnique: vi.fn().mockResolvedValue(event) },
+      guest: {
+        findFirst: vi.fn().mockResolvedValue({ id: actor.guestId, notesEncrypted: 'encrypted-note',
+          accommodationEncrypted: null, travelEncrypted: null, dietaryEncrypted: null,
+          accessibilityEncrypted: null }),
+        findMany: vi.fn().mockResolvedValue([{ fullName: 'Alex Morgan', email: 'alex@example.test' }]),
+      },
+      conversation: { findFirst: vi.fn().mockResolvedValue({ id: 'conversation-a' }) },
+      conversationMessage: { create: createMessage },
+    } as unknown as PrismaService;
+    const answer = vi.fn()
+      .mockResolvedValueOnce({ answer: 'Your seat is B12.' })
+      .mockResolvedValueOnce({ answer: 'Alex Morgan sits in A1.' });
+    const ai = {
+      embed: vi.fn().mockResolvedValue([[0.1]]), answer,
+    } as unknown as AiProvider;
+    const semanticSearch = vi.fn().mockResolvedValue([
+      { content: 'Alex Morgan sits in A1.' },
+      { content: 'Guest list: Jane sits in C4.' },
+      { content: 'Registration opens at 08:00.' },
+    ]);
+    let noteText = 'Seat B12';
+    const service = new ConciergeService(
+      prisma, ai, { semanticSearch } as unknown as EventKnowledgeRepository,
+      new AuthorizationService(),
+      { decrypt: vi.fn((value: string | null) => value === 'encrypted-note' ? noteText : null) } as unknown as FieldEncryptionService,
+    );
+    const events: ConciergeStreamEvent[] = [];
+
+    const result = await service.askGuest(actor, 'Where is my seat?', 'request-seat',
+      (streamEvent) => events.push(streamEvent));
+
+    expect(result.message.content).toBe('Your seat is B12.');
+    expect(answer.mock.calls[0]?.[0]).toMatchObject({
+      privateGuestContext: 'Your arrangements: Seat B12',
+      untrustedDocumentContext: 'Registration opens at 08:00.',
+    });
+    expect(events.map(({ type }) => type)).toEqual(['status', 'delta', 'message']);
+
+    noteText = 'Seat B12 next to Alex Morgan';
+    const filteredEvents: ConciergeStreamEvent[] = [];
+    const filtered = await service.askGuest(actor, 'Tell me my seating arrangements', 'request-seat-2',
+      (streamEvent) => filteredEvents.push(streamEvent));
+    expect(filtered.message.content).not.toContain('Alex Morgan');
+    expect(answer.mock.calls[1]?.[0]).toMatchObject({ privateGuestContext: '' });
+    expect(filteredEvents.some((streamEvent) =>
+      streamEvent.type === 'delta' && streamEvent.delta.includes('Alex Morgan'))).toBe(false);
   });
 });

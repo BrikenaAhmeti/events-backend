@@ -1,5 +1,6 @@
 import type { CommandBus } from '@nestjs/cqrs';
 import type { AuthenticatedActor } from '../../../common/types/request.types';
+import type { FieldEncryptionService } from '../../../common/security/field-encryption.service';
 import type { PrismaService } from '../../../infrastructure/database/prisma.service';
 import type { AiProvider } from '../../../infrastructure/openai/ai.provider';
 import type { EventCompletenessService } from '../../events/domain/event-completeness.service';
@@ -44,7 +45,7 @@ describe('OrganizerExtractionService guest chat', () => {
       extractEventInformation: vi.fn().mockResolvedValue({
         event: {}, facts: [], schedule: [],
         guests: [
-          { fullName: 'Alex Morgan', email: 'alex@example.test' },
+          { fullName: 'Alex Morgan', email: 'alex@example.test', notes: 'Seat B12' },
           { fullName: 'Sam Lee', email: 'sam@example.test' },
           { fullName: 'Taylor Reed', email: null },
         ],
@@ -57,6 +58,7 @@ describe('OrganizerExtractionService guest chat', () => {
       { assertMutable: vi.fn() } as unknown as EventMutationPolicyService,
       { evaluate: vi.fn().mockReturnValue({ ready: true, missing: [] }) } as unknown as EventCompletenessService,
       new AuthorizationService(),
+      { encrypt: (value?: string) => value ? `encrypted:${value}` : null } as FieldEncryptionService,
     );
 
     const result = await service.extractAndApply(
@@ -67,7 +69,7 @@ describe('OrganizerExtractionService guest chat', () => {
     expect(createGuests).toHaveBeenCalledWith(expect.objectContaining({
       skipDuplicates: true,
       data: [
-        expect.objectContaining({ normalizedEmail: 'alex@example.test' }),
+        expect.objectContaining({ normalizedEmail: 'alex@example.test', notesEncrypted: 'encrypted:Seat B12' }),
         expect.objectContaining({ normalizedEmail: 'sam@example.test' }),
       ],
     }));

@@ -18,6 +18,7 @@ describe('buildGuestInvitationEmail', () => {
       startAt: new Date('2027-10-12T08:00:00Z'),
       endAt: new Date('2027-10-14T18:00:00Z'),
       timezone: 'Europe/Lisbon',
+      personalDetails: 'Seat B12. Enter through the west door.',
       invitationUrl: 'https://events.example.test/i/opaque-token',
       qrPng: Buffer.from('qr-image'),
     });
@@ -29,6 +30,7 @@ describe('buildGuestInvitationEmail', () => {
     expect(html).toContain('Please do not forward it.');
     expect(html).toContain('cid:feliam-logo');
     expect(text).toContain('Riverside Hall, Lisbon');
+    expect(text).toContain('Seat B12. Enter through the west door.');
     expect(text).toContain('09:00 (Europe/Lisbon)');
     expect(text).toContain('https://events.example.test/i/opaque-token');
     expect(subject).toBe('Northstar Events: your invitation to Leadership Forum');

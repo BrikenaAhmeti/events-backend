@@ -127,6 +127,7 @@ export class CommunicationWorker implements OnModuleInit, OnModuleDestroy {
         startAt: invitation.event.startAt,
         endAt: invitation.event.endAt,
         timezone: invitation.event.timezone,
+        personalDetails: this.encryption.decrypt(invitation.guest.notesEncrypted),
         invitationUrl: url,
         qrPng,
       }),

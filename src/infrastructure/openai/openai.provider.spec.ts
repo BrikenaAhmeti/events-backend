@@ -86,6 +86,8 @@ describe('OpenAiProvider event setup', () => {
         event: null,
         facts: [],
         schedule: [],
+        guests: [{ fullName: 'Alex Morgan', email: 'alex@example.test', company: null,
+          guestGroup: null, notes: 'Seat B12' }],
       }),
     });
     const values: Record<string, string> = {
@@ -101,6 +103,7 @@ describe('OpenAiProvider event setup', () => {
     const result = await provider.extractEventInformation('The venue is Riverside Hall.', 'request-a');
 
     expect(result.reply).toBe('I captured the venue. What dates should I add?');
+    expect(result.guests?.[0]).toMatchObject({ fullName: 'Alex Morgan', notes: 'Seat B12' });
     const request = openAi.create.mock.calls[0]?.[0] as unknown as {
       model: string;
       text: { format: { type: string; strict: boolean } };
@@ -111,5 +114,86 @@ describe('OpenAiProvider event setup', () => {
     expect(request.model).toBe('test-model');
     expect(request.text.format).toMatchObject({ type: 'json_schema', strict: true });
     expect(options.headers).toEqual({ 'X-Client-Request-Id': 'request-a' });
+  });
+
+  it('keeps valid event details when extracted dates lack times and offsets', async () => {
+    openAi.create.mockResolvedValueOnce({
+      output_text: JSON.stringify({
+        reply: 'I captured the conference details.',
+        event: {
+          name: 'Europe Dev Conference',
+          category: 'CONFERENCE',
+          destination: 'Rome',
+          startAt: '2026-09-22',
+          endAt: '2026-09-23',
+          startDate: '2026-09-22',
+          endDate: '2026-09-23',
+          organizerName: 'Alex Morgan',
+          organizerEmail: 'alex@example.com',
+        },
+        facts: [],
+        schedule: [],
+        guests: [],
+      }),
+    });
+    const config = {
+      get: (key: string) => ({ OPENAI_API_KEY: 'test-key', OPENAI_MODEL: 'test-model' })[key],
+    } as unknown as ConfigService<Environment, true>;
+    const provider = new OpenAiProvider(config);
+
+    const result = await provider.extractEventInformation(
+      'Europe Dev Conference, 22 September to 23 September 2026, Rome, Alex Morgan',
+      'request-date-only',
+    );
+
+    expect(result.event).toMatchObject({
+      name: 'Europe Dev Conference',
+      category: 'CONFERENCE',
+      destination: 'Rome',
+      organizerName: 'Alex Morgan',
+      organizerEmail: 'alex@example.com',
+    });
+    expect(result.event?.startAt).toBeUndefined();
+    expect(result.event?.endAt).toBeUndefined();
+    expect(result.event?.startDate).toBe('2026-09-22');
+    expect(result.event?.endDate).toBe('2026-09-23');
+  });
+
+  it('normalizes complete offset datetimes to the UTC format used by event details', async () => {
+    openAi.create.mockResolvedValueOnce({
+      output_text: JSON.stringify({
+        reply: 'I captured the times.',
+        event: {
+          startAt: '2026-09-22T09:00:00+02:00',
+          endAt: '2026-09-23T18:00:00+02:00',
+        },
+        facts: [],
+        schedule: [],
+        guests: [],
+      }),
+    });
+    const config = {
+      get: (key: string) => ({ OPENAI_API_KEY: 'test-key', OPENAI_MODEL: 'test-model' })[key],
+    } as unknown as ConfigService<Environment, true>;
+    const provider = new OpenAiProvider(config);
+
+    const result = await provider.extractEventInformation(
+      '22 September at 9am until 23 September at 6pm in Rome',
+      'request-offset',
+    );
+
+    expect(result.event?.startAt).toBe('2026-09-22T07:00:00.000Z');
+    expect(result.event?.endAt).toBe('2026-09-23T16:00:00.000Z');
+  });
+
+  it('reports malformed model output as an extraction failure rather than bad user input', async () => {
+    openAi.create.mockResolvedValueOnce({ output_text: '{invalid-json' });
+    const config = {
+      get: (key: string) => ({ OPENAI_API_KEY: 'test-key', OPENAI_MODEL: 'test-model' })[key],
+    } as unknown as ConfigService<Environment, true>;
+    const provider = new OpenAiProvider(config);
+
+    await expect(provider.extractEventInformation('A conference in Rome', 'request-invalid'))
+      .rejects.toMatchObject({ statusCode: 502, code: 'EVENT_EXTRACTION_FAILED' });
   });
 });

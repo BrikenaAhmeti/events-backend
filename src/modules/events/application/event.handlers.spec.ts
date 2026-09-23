@@ -1,6 +1,7 @@
 import type { PrismaService } from '../../../infrastructure/database/prisma.service';
 import type { OutboxService } from '../../../infrastructure/jobs/outbox.service';
 import type { AuthenticatedActor } from '../../../common/types/request.types';
+import type { FieldEncryptionService } from '../../../common/security/field-encryption.service';
 import { AuthorizationService } from '../../memberships/application/authorization.service';
 import { Permission } from '../../memberships/domain/permission';
 import { EventCompletenessService } from '../domain/event-completeness.service';
@@ -69,6 +70,7 @@ const readyInput = {
 };
 
 describe('CreateEventDraftHandler', () => {
+  const encryption = { encrypt: (value?: string) => value ? `encrypted:${value}` : null } as FieldEncryptionService;
   it('blocks event creation until extracted document details are confirmed', async () => {
     const transaction = vi.fn();
     const handler = new CreateEventDraftHandler(
@@ -80,6 +82,7 @@ describe('CreateEventDraftHandler', () => {
       } as unknown as PrismaService,
       new AuthorizationService(),
       new EventCompletenessService(),
+      encryption,
     );
 
     await expect(handler.execute(new CreateEventDraftCommand(actor, 'request-pending', {
@@ -103,7 +106,7 @@ describe('CreateEventDraftHandler', () => {
         findFirst: vi.fn().mockResolvedValue({
           id: 'setup-a',
           draft: { guests: [
-            { fullName: 'Alex Morgan', email: 'Alex@Example.test' },
+            { fullName: 'Alex Morgan', email: 'Alex@Example.test', notes: 'Seat B12' },
             { fullName: 'Sam Lee', email: 'sam@example.test' },
           ] },
         }),
@@ -114,6 +117,7 @@ describe('CreateEventDraftHandler', () => {
       prisma,
       new AuthorizationService(),
       new EventCompletenessService(),
+      encryption,
     );
 
     await handler.execute(new CreateEventDraftCommand(actor, 'request-guests', {
@@ -124,7 +128,7 @@ describe('CreateEventDraftHandler', () => {
     expect(createGuests).toHaveBeenCalledWith(expect.objectContaining({
       skipDuplicates: true,
       data: [
-        expect.objectContaining({ fullName: 'Alex Morgan', normalizedEmail: 'alex@example.test' }),
+        expect.objectContaining({ fullName: 'Alex Morgan', normalizedEmail: 'alex@example.test', notesEncrypted: 'encrypted:Seat B12' }),
         expect.objectContaining({ fullName: 'Sam Lee', normalizedEmail: 'sam@example.test' }),
       ],
     }));
@@ -150,6 +154,7 @@ describe('CreateEventDraftHandler', () => {
       prisma,
       new AuthorizationService(),
       new EventCompletenessService(),
+      encryption,
     );
 
     await handler.execute(
@@ -214,6 +219,7 @@ describe('CreateEventDraftHandler', () => {
       prisma,
       new AuthorizationService(),
       new EventCompletenessService(),
+      encryption,
     );
 
     await handler.execute(
@@ -240,6 +246,7 @@ describe('CreateEventDraftHandler', () => {
       { $transaction: transaction } as unknown as PrismaService,
       new AuthorizationService(),
       new EventCompletenessService(),
+      encryption,
     );
 
     await expect(
@@ -277,6 +284,7 @@ describe('CreateEventDraftHandler', () => {
       prisma,
       new AuthorizationService(),
       new EventCompletenessService(),
+      encryption,
     );
 
     await handler.execute(

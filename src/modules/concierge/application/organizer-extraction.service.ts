@@ -3,6 +3,7 @@ import { CommandBus } from '@nestjs/cqrs';
 import { z } from 'zod';
 import type { AuthenticatedActor } from '../../../common/types/request.types';
 import { ApplicationError } from '../../../common/errors/application.error';
+import { FieldEncryptionService } from '../../../common/security/field-encryption.service';
 import { AiProvider } from '../../../infrastructure/openai/ai.provider';
 import { PrismaService } from '../../../infrastructure/database/prisma.service';
 import { scheduleItemSchema, updateEventSchema } from '../../events/application/event.contracts';
@@ -22,6 +23,7 @@ export class OrganizerExtractionService {
     private readonly policy: EventMutationPolicyService,
     private readonly completeness: EventCompletenessService,
     private readonly authorization: AuthorizationService,
+    private readonly encryption: FieldEncryptionService,
   ) {}
 
   async extractAndApply(
@@ -161,6 +163,7 @@ export class OrganizerExtractionService {
             normalizedEmail: guest.email.toLowerCase(),
             company: guest.company,
             guestGroup: guest.guestGroup,
+            notesEncrypted: this.encryption.encrypt(guest.notes),
           })),
           skipDuplicates: true,
         });

@@ -36,6 +36,8 @@ const setupStartSchema = z.object({
 });
 const setupDraftSchema = z.object({
   event: updateEventSchema.default({}),
+  dateHints: z.object({ startDate: z.iso.date().or(z.literal('')), endDate: z.iso.date().or(z.literal('')) })
+    .default({ startDate: '', endDate: '' }),
   facts: z.array(eventFactInputSchema).max(200).default([]),
   schedule: z.array(scheduleItemSchema).max(200).default([]),
   guests: z.array(chatGuestSchema).max(500).default([]),
@@ -44,6 +46,8 @@ const setupDraftSchema = z.object({
   documentReviewPending: z.boolean().default(false),
   documentReviewBaseline: z.object({
     event: updateEventSchema.default({}),
+    dateHints: z.object({ startDate: z.iso.date().or(z.literal('')), endDate: z.iso.date().or(z.literal('')) })
+      .default({ startDate: '', endDate: '' }),
     facts: z.array(eventFactInputSchema).max(200).default([]),
     schedule: z.array(scheduleItemSchema).max(200).default([]),
     guests: z.array(chatGuestSchema).max(500).default([]),
@@ -236,6 +240,7 @@ export class EventSetupAnalysisService {
         message,
         messages: [userMessage, assistantMessage],
         event: { ...previous.event, name: previous.event.name ?? undefined },
+        dateHints: previous.dateHints,
         suggestedName: previous.suggestedName,
         nameWasProvided: Boolean(previous.event.name),
         completeness: this.completeness.evaluate(this.projectEvent(previous.event)),
@@ -299,7 +304,7 @@ export class EventSetupAnalysisService {
       .join('\n');
     const source = [
       `Current event setup draft (document details may be unconfirmed):\n${JSON.stringify({
-        event: previous.event, facts: previous.facts,
+        event: previous.event, dateHints: previous.dateHints, facts: previous.facts,
         schedule: previous.schedule, guests: previous.guests,
       })}`,
       recentConversation ? `Recent setup conversation:\n${recentConversation}` : '',
@@ -310,9 +315,17 @@ export class EventSetupAnalysisService {
       .join('\n\n')
       .trim();
     const extracted = await this.ai.extractEventInformation(source, requestId);
-    const parsed = updateEventSchema.safeParse(extracted.event ?? {});
+    const extractedEvent = extracted.event ?? {};
+    const validEventFields = Object.fromEntries(
+      Object.entries(updateEventSchema.shape).flatMap(([key, schema]) => {
+        const value = extractedEvent[key as keyof typeof extractedEvent];
+        if (value === undefined) return [];
+        const parsed = schema.safeParse(value);
+        return parsed.success ? [[key, parsed.data]] : [];
+      }),
+    ) as SetupDraft['event'];
     const event = this.mergeEvent(
-      this.mergeEvent(previous.event, parsed.success ? parsed.data : {}),
+      this.mergeEvent(previous.event, validEventFields),
       {
         startAt: input.startAt,
         endAt: input.endAt,
@@ -340,6 +353,10 @@ export class EventSetupAnalysisService {
     const documentReviewPending = previous.documentReviewPending || Boolean(file);
     const draft: SetupDraft = {
       event,
+      dateHints: {
+        startDate: extracted.event?.startDate ?? previous.dateHints.startDate,
+        endDate: extracted.event?.endDate ?? previous.dateHints.endDate,
+      },
       suggestedName,
       nameWasProvided: Boolean(event.name),
       facts,
@@ -348,6 +365,7 @@ export class EventSetupAnalysisService {
       documentReviewPending,
       documentReviewBaseline: previous.documentReviewBaseline ?? (file ? {
         event: previous.event,
+        dateHints: previous.dateHints,
         facts: previous.facts,
         schedule: previous.schedule,
         guests: previous.guests,
@@ -359,8 +377,8 @@ export class EventSetupAnalysisService {
     const message = (documentReviewPending
       ? this.buildDocumentReviewReply(draft, file?.originalname)
       : this.buildReply(extracted.reply, completeness)) +
-      (parsedGuests.missingEmails.length && completeness.ready
-        ? ` I still need email addresses for: ${parsedGuests.missingEmails.join(', ')}.`
+      (parsedGuests.missingEmails.length
+        ? ` I still need email addresses before I can add these guests: ${parsedGuests.missingEmails.join(', ')}.`
         : '') +
       (parsedGuests.guests.length && !mayManageGuests
         ? ' A team member with guest management access will need to add these guests.'
@@ -384,6 +402,7 @@ export class EventSetupAnalysisService {
       message,
       messages: [userMessage, assistantMessage],
       event: { ...event, name: event.name ?? undefined },
+      dateHints: draft.dateHints,
       suggestedName,
       nameWasProvided: Boolean(event.name),
       completeness,
@@ -402,7 +421,8 @@ export class EventSetupAnalysisService {
     return parsed.success
       ? parsed.data
       : {
-          event: {}, facts: [], schedule: [], guests: [], suggestedName: '',
+          event: {}, dateHints: { startDate: '', endDate: '' },
+          facts: [], schedule: [], guests: [], suggestedName: '',
           nameWasProvided: false, documentReviewPending: false,
           documentReviewBaseline: null, pendingDocumentNames: [],
         };
@@ -450,7 +470,7 @@ export class EventSetupAnalysisService {
       return [userMessage, assistantMessage];
     });
     return {
-      sessionId, message, messages, event: draft.event,
+      sessionId, message, messages, event: draft.event, dateHints: draft.dateHints,
       suggestedName: draft.suggestedName,
       nameWasProvided: Boolean(draft.event.name),
       completeness, facts: draft.facts, schedule: draft.schedule, guests: draft.guests,
@@ -483,7 +503,9 @@ export class EventSetupAnalysisService {
       details.length ? `Current draft event details to confirm:\n${details.join('\n')}` : 'I could not identify new required event fields from it.',
       draft.facts.length ? `Additional details: ${draft.facts.map((fact) => `${fact.key}: ${fact.value.slice(0, 200)}`).join('; ')}` : '',
       draft.schedule.length ? `Schedule: ${draft.schedule.map((item) => `${item.title} (${item.startAt})`).join('; ')}` : '',
-      draft.guests.length ? `Guests: ${draft.guests.map((guest) => `${guest.fullName} <${guest.email}>`).join('; ')}` : '',
+      draft.guests.length ? `Guests: ${draft.guests.map((guest) =>
+        `${guest.fullName} <${guest.email}>${guest.notes ? ` — ${guest.notes.slice(0, 200)}` : ''}`,
+      ).join('; ')}` : '',
       'Please confirm these extracted details, or tell me what to correct. You can also attach another document. I will ask for missing information after you confirm.',
     ];
     return lines.filter(Boolean).join('\n\n');

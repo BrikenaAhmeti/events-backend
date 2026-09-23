@@ -7,6 +7,7 @@ import {
 import type { Prisma } from '@prisma/client';
 import { randomUUID } from 'node:crypto';
 import { ApplicationError } from '../../../common/errors/application.error';
+import { FieldEncryptionService } from '../../../common/security/field-encryption.service';
 import { PrismaService } from '../../../infrastructure/database/prisma.service';
 import { OutboxService } from '../../../infrastructure/jobs/outbox.service';
 import { AuthorizationService } from '../../memberships/application/authorization.service';
@@ -47,6 +48,7 @@ export class CreateEventDraftHandler implements ICommandHandler<CreateEventDraft
     private readonly prisma: PrismaService,
     private readonly authorization: AuthorizationService,
     private readonly completeness: EventCompletenessService,
+    private readonly encryption: FieldEncryptionService,
   ) {}
 
   async execute({ actor, input, requestId }: CreateEventDraftCommand) {
@@ -155,6 +157,7 @@ export class CreateEventDraftHandler implements ICommandHandler<CreateEventDraft
             normalizedEmail: guest.email.toLowerCase(),
             company: guest.company,
             guestGroup: guest.guestGroup,
+            notesEncrypted: this.encryption.encrypt(guest.notes),
           })),
           skipDuplicates: true,
         });

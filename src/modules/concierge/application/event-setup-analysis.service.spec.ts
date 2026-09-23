@@ -159,7 +159,10 @@ describe('EventSetupAnalysisService', () => {
   it('stores the model reply, merged setup state, and the next missing-detail question', async () => {
     const extractEventInformation = vi.fn().mockResolvedValue({
       reply: 'I captured the venue.',
-      event: { name: 'Leadership Forum', category: 'CONFERENCE', venue: 'Riverside Hall' },
+      event: {
+        name: 'Leadership Forum', category: 'CONFERENCE', venue: 'Riverside Hall',
+        organizerEmail: 'invalid email',
+      },
       facts: [],
       schedule: [],
       guests: [
@@ -249,7 +252,7 @@ describe('EventSetupAnalysisService', () => {
       timezone: 'Europe/Lisbon',
     });
     expect(result.message).toBe(
-      'I captured the venue. What are the start and end dates and times, and which timezone should I use? You can write them together in the chat.',
+      'I captured the venue. What are the start and end dates and times, and which timezone should I use? You can write them together in the chat. I still need email addresses before I can add these guests: Sam Lee.',
     );
     expect(result.guests).toEqual([{ fullName: 'Alex Morgan', email: 'alex@example.test' }]);
     expect(updateConversation).toHaveBeenCalledWith(

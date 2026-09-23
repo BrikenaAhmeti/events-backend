@@ -26,6 +26,7 @@ export const chatGuestSchema = guestSchema.pick({
   email: true,
   company: true,
   guestGroup: true,
+  notes: true,
 });
 
 export function validChatGuests(candidates: Array<unknown> = []) {
@@ -33,7 +34,9 @@ export function validChatGuests(candidates: Array<unknown> = []) {
   const missingEmails: string[] = [];
   for (const candidate of candidates) {
     const result = chatGuestSchema.safeParse(candidate);
-    if (result.success) guests.set(result.data.email, result.data);
+    if (result.success) guests.set(result.data.email, {
+      ...guests.get(result.data.email), ...result.data,
+    });
     else if (candidate && typeof candidate === 'object' && 'fullName' in candidate &&
       typeof candidate.fullName === 'string' && candidate.fullName.trim())
       missingEmails.push(candidate.fullName.trim());
