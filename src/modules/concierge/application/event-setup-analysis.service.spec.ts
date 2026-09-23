@@ -146,7 +146,7 @@ describe('EventSetupAnalysisService', () => {
       'request-template',
     );
 
-    expect(result.template).toEqual({
+    expect('template' in result ? result.template : undefined).toEqual({
       kind: 'EVENT_BRIEF',
       fileName: 'feliam-event-brief-template.docx',
     });
@@ -233,7 +233,7 @@ describe('EventSetupAnalysisService', () => {
     );
 
     expect(extractEventInformation).toHaveBeenCalledWith(
-      expect.stringContaining('Previously confirmed event setup state:'),
+      expect.stringContaining('Current event setup draft'),
       'request-a',
     );
     expect(extractEventInformation).toHaveBeenCalledWith(
@@ -249,7 +249,7 @@ describe('EventSetupAnalysisService', () => {
       timezone: 'Europe/Lisbon',
     });
     expect(result.message).toBe(
-      'I captured the venue. Choose the start and end date and time below. I’ll include your local timezone.',
+      'I captured the venue. What are the start and end dates and times, and which timezone should I use? You can write them together in the chat.',
     );
     expect(result.guests).toEqual([{ fullName: 'Alex Morgan', email: 'alex@example.test' }]);
     expect(updateConversation).toHaveBeenCalledWith(
@@ -346,5 +346,84 @@ describe('EventSetupAnalysisService', () => {
     expect(documentInput?.data.extraction).toBeDefined();
     expect(documentInput?.data).not.toHaveProperty('eventId');
     expect(result.file).toEqual({ id: 'document-a', name: 'event-plan.txt', size: 62 });
+    expect(result.documentReviewPending).toBe(true);
+    expect(result.message).toContain('Current draft event details to confirm:');
+    expect(result.message).toContain('Venue: Riverside Hall');
+    expect(transaction.conversation.update.mock.calls[0]?.[0]).toMatchObject({
+      data: { draft: { documentReviewPending: true } },
+    });
+  });
+
+  it('requires explicit confirmation of document details before asking for remaining details', async () => {
+    const draft = {
+      event: { name: 'Leadership Forum', venue: 'Riverside Hall' },
+      facts: [], schedule: [], guests: [], suggestedName: 'Leadership Forum',
+      nameWasProvided: true, documentReviewPending: true,
+      documentReviewBaseline: { event: {}, facts: [], schedule: [], guests: [] },
+      pendingDocumentNames: ['different-layout.pdf'],
+    };
+    const transaction = {
+      conversation: { update: vi.fn().mockResolvedValue({ id: sessionId }) },
+      conversationMessage: { create: vi.fn().mockImplementation(({ data }: { data: { role: string } }) =>
+        Promise.resolve({ id: data.role, ...data, createdAt: new Date() })) },
+    };
+    const extractEventInformation = vi.fn();
+    const service = new EventSetupAnalysisService(
+      {
+        client: { findUnique: vi.fn().mockResolvedValue({ name: 'Northstar Events' }) },
+        conversation: { findFirst: vi.fn().mockResolvedValue({ id: sessionId, draft }) },
+        $transaction: vi.fn((work: (value: typeof transaction) => unknown) => work(transaction)),
+      } as unknown as PrismaService,
+      new AuthorizationService(),
+      {} as FileValidationService,
+      {} as DocumentTextExtractorService,
+      { extractEventInformation } as unknown as AiProvider,
+      { evaluate: vi.fn().mockReturnValue({ score: 25, ready: false, missing: ['startAt'] }) } as unknown as EventCompletenessService,
+      {} as FileStorage,
+    );
+
+    const result = await service.analyze(
+      actor, { clientId, sessionId, text: 'Confirm details' }, undefined, 'request-confirm',
+    );
+
+    expect(extractEventInformation).not.toHaveBeenCalled();
+    expect(result.documentReviewPending).toBe(false);
+    expect(result.event).toMatchObject({ name: 'Leadership Forum', venue: 'Riverside Hall' });
+    expect(result.message).toContain('What are the start and end dates and times');
+    expect(transaction.conversation.update.mock.calls[0]?.[0]).toMatchObject({
+      data: { draft: { documentReviewPending: false } },
+    });
+  });
+
+  it('sets aside document-derived fields when the creator rejects them', async () => {
+    const draft = {
+      event: { name: 'Wrong name', venue: 'Wrong venue' },
+      facts: [], schedule: [], guests: [], suggestedName: 'Wrong name',
+      nameWasProvided: true, documentReviewPending: true,
+      documentReviewBaseline: { event: { name: 'Correct name' }, facts: [], schedule: [], guests: [] },
+      pendingDocumentNames: ['notes.txt'],
+    };
+    const transaction = {
+      conversation: { update: vi.fn().mockResolvedValue({ id: sessionId }) },
+      conversationMessage: { create: vi.fn().mockImplementation(({ data }: { data: { role: string } }) =>
+        Promise.resolve({ id: data.role, ...data, createdAt: new Date() })) },
+    };
+    const service = new EventSetupAnalysisService(
+      {
+        client: { findUnique: vi.fn().mockResolvedValue({ name: 'Northstar Events' }) },
+        conversation: { findFirst: vi.fn().mockResolvedValue({ id: sessionId, draft }) },
+        $transaction: vi.fn((work: (value: typeof transaction) => unknown) => work(transaction)),
+      } as unknown as PrismaService,
+      new AuthorizationService(), {} as FileValidationService,
+      {} as DocumentTextExtractorService, {} as AiProvider,
+      { evaluate: vi.fn().mockReturnValue({ score: 25, ready: false, missing: ['location'], warnings: [], recommendations: [] }) } as unknown as EventCompletenessService,
+      {} as FileStorage,
+    );
+
+    const result = await service.analyze(actor, { clientId, sessionId, text: 'Reject' }, undefined, 'request-reject');
+
+    expect(result.event).toEqual({ name: 'Correct name' });
+    expect(result.suggestedName).toBe('Correct name');
+    expect(result.documentReviewPending).toBe(false);
   });
 });

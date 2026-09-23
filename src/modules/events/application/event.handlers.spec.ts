@@ -69,6 +69,26 @@ const readyInput = {
 };
 
 describe('CreateEventDraftHandler', () => {
+  it('blocks event creation until extracted document details are confirmed', async () => {
+    const transaction = vi.fn();
+    const handler = new CreateEventDraftHandler(
+      {
+        conversation: { findFirst: vi.fn().mockResolvedValue({
+          id: 'setup-a', draft: { documentReviewPending: true },
+        }) },
+        $transaction: transaction,
+      } as unknown as PrismaService,
+      new AuthorizationService(),
+      new EventCompletenessService(),
+    );
+
+    await expect(handler.execute(new CreateEventDraftCommand(actor, 'request-pending', {
+      ...readyInput,
+      setupSessionId: '9f47fbca-c63c-4ea0-af61-c74390c238b8',
+    }))).rejects.toMatchObject({ code: 'EVENT_DOCUMENT_REVIEW_REQUIRED' });
+    expect(transaction).not.toHaveBeenCalled();
+  });
+
   it('saves guests collected in the setup chat when creating the event', async () => {
     const createGuests = vi.fn().mockResolvedValue({ count: 2 });
     const transaction = {

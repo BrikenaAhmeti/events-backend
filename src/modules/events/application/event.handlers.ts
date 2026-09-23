@@ -96,6 +96,13 @@ export class CreateEventDraftHandler implements ICommandHandler<CreateEventDraft
           'This setup conversation is no longer active. Start a new event setup.',
         );
       const stored = setup.draft;
+      if (stored && typeof stored === 'object' && !Array.isArray(stored) &&
+        'documentReviewPending' in stored && stored.documentReviewPending === true)
+        throw new ApplicationError(
+          409,
+          'EVENT_DOCUMENT_REVIEW_REQUIRED',
+          'Confirm or correct the details extracted from your documents before creating the event.',
+        );
       const candidates = stored && typeof stored === 'object' && !Array.isArray(stored) &&
         'guests' in stored && Array.isArray(stored.guests) ? stored.guests : [];
       setupGuests = validChatGuests(candidates).guests;

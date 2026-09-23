@@ -41,6 +41,14 @@ const setupDraftSchema = z.object({
   guests: z.array(chatGuestSchema).max(500).default([]),
   suggestedName: z.string().max(160).default(''),
   nameWasProvided: z.boolean().default(false),
+  documentReviewPending: z.boolean().default(false),
+  documentReviewBaseline: z.object({
+    event: updateEventSchema.default({}),
+    facts: z.array(eventFactInputSchema).max(200).default([]),
+    schedule: z.array(scheduleItemSchema).max(200).default([]),
+    guests: z.array(chatGuestSchema).max(500).default([]),
+  }).nullable().default(null),
+  pendingDocumentNames: z.array(z.string().max(255)).max(100).default([]),
 });
 
 type SetupDraft = z.infer<typeof setupDraftSchema>;
@@ -194,6 +202,15 @@ export class EventSetupAnalysisService {
     if (!client) throw new ApplicationError(404, 'CLIENT_NOT_FOUND', 'Client not found.');
     const previous = this.readDraft(session.draft);
 
+    if (!file && input.text && previous.documentReviewPending &&
+      this.confirmsDocumentReview(input.text)) {
+      return this.resolveDocumentReview(session.id, previous, input.text, true);
+    }
+    if (!file && input.text && previous.documentReviewPending &&
+      this.rejectsDocumentReview(input.text)) {
+      return this.resolveDocumentReview(session.id, previous, input.text, false);
+    }
+
     if (!file && input.text && this.requestsTemplate(input.text)) {
       const userMessage = await this.prisma.conversationMessage.create({
         data: {
@@ -225,6 +242,7 @@ export class EventSetupAnalysisService {
         facts: previous.facts,
         schedule: previous.schedule,
         guests: previous.guests,
+        documentReviewPending: previous.documentReviewPending,
         extractedFacts: previous.facts.length,
         extractedScheduleItems: previous.schedule.length,
         file: null,
@@ -246,7 +264,9 @@ export class EventSetupAnalysisService {
       throw new ApplicationError(
         400,
         'EVENT_SOURCE_REQUIRED',
-        'Describe the event or attach an event file to continue.',
+        file
+          ? 'I could not read any text from that file. Try a text-based PDF, DOCX, TXT, CSV, or XLSX file, or describe its details in chat.'
+          : 'Describe the event or attach an event file to continue.',
       );
     }
     if (file && extractedFile) {
@@ -278,7 +298,10 @@ export class EventSetupAnalysisService {
       )
       .join('\n');
     const source = [
-      `Previously confirmed event setup state:\n${JSON.stringify(previous)}`,
+      `Current event setup draft (document details may be unconfirmed):\n${JSON.stringify({
+        event: previous.event, facts: previous.facts,
+        schedule: previous.schedule, guests: previous.guests,
+      })}`,
       recentConversation ? `Recent setup conversation:\n${recentConversation}` : '',
       input.text ? `Latest event creator message:\n${input.text}` : '',
       fileText ? `Attached event file content:\n${fileText}` : '',
@@ -314,6 +337,7 @@ export class EventSetupAnalysisService {
     const suggestedName =
       event.name ?? (previous.suggestedName || this.suggestName(event, client.name));
     const completeness = this.completeness.evaluate(this.projectEvent(event));
+    const documentReviewPending = previous.documentReviewPending || Boolean(file);
     const draft: SetupDraft = {
       event,
       suggestedName,
@@ -321,8 +345,20 @@ export class EventSetupAnalysisService {
       facts,
       schedule,
       guests,
+      documentReviewPending,
+      documentReviewBaseline: previous.documentReviewBaseline ?? (file ? {
+        event: previous.event,
+        facts: previous.facts,
+        schedule: previous.schedule,
+        guests: previous.guests,
+      } : null),
+      pendingDocumentNames: file
+        ? [...previous.pendingDocumentNames, file.originalname.slice(0, 255)].slice(0, 100)
+        : previous.pendingDocumentNames,
     };
-    const message = this.buildReply(extracted.reply, completeness) +
+    const message = (documentReviewPending
+      ? this.buildDocumentReviewReply(draft, file?.originalname)
+      : this.buildReply(extracted.reply, completeness)) +
       (parsedGuests.missingEmails.length && completeness.ready
         ? ` I still need email addresses for: ${parsedGuests.missingEmails.join(', ')}.`
         : '') +
@@ -354,6 +390,7 @@ export class EventSetupAnalysisService {
       facts,
       schedule,
       guests,
+      documentReviewPending,
       extractedFacts: facts.length,
       extractedScheduleItems: schedule.length,
       file: savedFile,
@@ -364,7 +401,92 @@ export class EventSetupAnalysisService {
     const parsed = setupDraftSchema.safeParse(value);
     return parsed.success
       ? parsed.data
-      : { event: {}, facts: [], schedule: [], guests: [], suggestedName: '', nameWasProvided: false };
+      : {
+          event: {}, facts: [], schedule: [], guests: [], suggestedName: '',
+          nameWasProvided: false, documentReviewPending: false,
+          documentReviewBaseline: null, pendingDocumentNames: [],
+        };
+  }
+
+  private confirmsDocumentReview(text: string): boolean {
+    return /^(confirm(?:ed)?(?: (?:details|information|info))?|yes|looks good|all correct|that'?s correct|approved)[.!]?$/i.test(text.trim());
+  }
+
+  private rejectsDocumentReview(text: string): boolean {
+    return /^(reject|ignore|discard)(?: (?:the |that )?(?:document|extracted (?:details|information)))?[.!]?$/i.test(text.trim());
+  }
+
+  private async resolveDocumentReview(
+    sessionId: string,
+    previous: SetupDraft,
+    text: string,
+    confirmed: boolean,
+  ) {
+    const baseline = previous.documentReviewBaseline;
+    const draft: SetupDraft = {
+      ...previous,
+      ...(confirmed || !baseline ? {} : baseline),
+      suggestedName: !confirmed && baseline ? baseline.event.name ?? '' : previous.suggestedName,
+      nameWasProvided: !confirmed && baseline ? Boolean(baseline.event.name) : previous.nameWasProvided,
+      documentReviewPending: false,
+      documentReviewBaseline: null,
+      pendingDocumentNames: [],
+    };
+    const completeness = this.completeness.evaluate(this.projectEvent(draft.event));
+    const message = confirmed
+      ? `Thanks, I’ll use those confirmed details. ${this.buildReply(undefined, completeness)}`
+      : `I set aside the extracted event details. The document is still saved as reference material. ${this.buildReply(undefined, completeness)}`;
+    const messages = await this.prisma.$transaction(async (transaction) => {
+      const userMessage = await transaction.conversationMessage.create({
+        data: { conversationId: sessionId, role: 'USER', content: text, status: 'COMPLETE' },
+      });
+      await transaction.conversation.update({
+        where: { id: sessionId },
+        data: { draft: JSON.parse(JSON.stringify(draft)) as Prisma.InputJsonValue },
+      });
+      const assistantMessage = await transaction.conversationMessage.create({
+        data: { conversationId: sessionId, role: 'CONCIERGE', content: message, status: 'COMPLETE' },
+      });
+      return [userMessage, assistantMessage];
+    });
+    return {
+      sessionId, message, messages, event: draft.event,
+      suggestedName: draft.suggestedName,
+      nameWasProvided: Boolean(draft.event.name),
+      completeness, facts: draft.facts, schedule: draft.schedule, guests: draft.guests,
+      extractedFacts: draft.facts.length,
+      extractedScheduleItems: draft.schedule.length,
+      documentReviewPending: false,
+      file: null,
+    };
+  }
+
+  private buildDocumentReviewReply(
+    draft: SetupDraft,
+    latestFileName: string | undefined,
+  ): string {
+    const labels: Record<string, string> = {
+      name: 'Event name', category: 'Type', description: 'Purpose',
+      destination: 'Destination', venue: 'Venue', venueAddress: 'Venue address',
+      startAt: 'Start', endAt: 'End', timezone: 'Timezone',
+      organizerName: 'Organizer', organizerEmail: 'Organizer email',
+    };
+    const details = Object.entries(draft.event).flatMap(([key, value]) =>
+      typeof value === 'string' && value.trim()
+        ? [`${labels[key] ?? key}: ${value.slice(0, 300)}`]
+        : [],
+    );
+    const lines = [
+      latestFileName
+        ? `I read ${latestFileName}. It can be any event document; it does not need to use our template.`
+        : `Here is the current draft from ${draft.pendingDocumentNames.join(', ')} with your latest corrections.`,
+      details.length ? `Current draft event details to confirm:\n${details.join('\n')}` : 'I could not identify new required event fields from it.',
+      draft.facts.length ? `Additional details: ${draft.facts.map((fact) => `${fact.key}: ${fact.value.slice(0, 200)}`).join('; ')}` : '',
+      draft.schedule.length ? `Schedule: ${draft.schedule.map((item) => `${item.title} (${item.startAt})`).join('; ')}` : '',
+      draft.guests.length ? `Guests: ${draft.guests.map((guest) => `${guest.fullName} <${guest.email}>`).join('; ')}` : '',
+      'Please confirm these extracted details, or tell me what to correct. You can also attach another document. I will ask for missing information after you confirm.',
+    ];
+    return lines.filter(Boolean).join('\n\n');
   }
 
   private requestsTemplate(text: string): boolean {
@@ -399,7 +521,7 @@ export class EventSetupAnalysisService {
       .join(' ')
       .trim();
     if (completeness.ready) {
-      return `${acknowledgement || 'I captured the event details.'} Everything required is ready. You can add guest names and email addresses here, correct anything, or continue.`;
+      return `${acknowledgement || 'I captured the event details.'} Everything required is ready. Do you have any other documents about the event to share? Attach them here, or continue to guest details and publishing.`;
     }
     const missing = new Set(completeness.missing);
     let question: string;
@@ -412,7 +534,7 @@ export class EventSetupAnalysisService {
         ['endBeforeStart', 'invalidTimezone'].includes(warning),
       )
     ) {
-      question = 'Choose the start and end date and time below. I’ll include your local timezone.';
+      question = 'What are the start and end dates and times, and which timezone should I use? You can write them together in the chat.';
     } else if (missing.has('location')) {
       question =
         'Send the destination or city, venue, and venue address in one message, separated by commas. Add “not decided” for anything you do not know yet.';
