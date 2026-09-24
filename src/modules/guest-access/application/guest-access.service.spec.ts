@@ -255,6 +255,20 @@ describe('GuestAccessService invitation security', () => {
     ).rejects.toMatchObject({ code: 'INVITATION_INVALID' });
   });
 
+  it('does not exchange a token whose invitation is not linked to its guest', async () => {
+    const service = createService({
+      guestId: 'guest-a', guest: { id: 'guest-b' }, status: 'SENT', revokedAt: null,
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      event: {
+        id: 'event-a', slug: 'event-a', status: 'PUBLISHED',
+        startAt: new Date(Date.now() + 60 * 60 * 1000),
+        endAt: new Date(Date.now() + 2 * 60 * 60 * 1000),
+      },
+    });
+    await expect(service.exchange({ token: 'c'.repeat(43) }, '127.0.0.3', {} as Response))
+      .rejects.toMatchObject({ code: 'INVITATION_INVALID' });
+  });
+
   it('still requires the listed name and email for a shared event link', async () => {
     const event = {
       id: 'event-a', slug: 'event-a', status: 'PUBLISHED',
