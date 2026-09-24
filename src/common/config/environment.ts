@@ -38,6 +38,7 @@ export const environmentSchema = z
     COOKIE_DOMAIN: z.string().default(''),
     COOKIE_SAME_SITE: z.enum(['lax', 'none', 'strict']).default('lax'),
     DATA_ENCRYPTION_KEY: z.string().default(''),
+    CRON_SECRET: z.string().min(32).or(z.literal('')).default(''),
   })
   .superRefine((environment, context) => {
     if (environment.NODE_ENV !== 'production') return;

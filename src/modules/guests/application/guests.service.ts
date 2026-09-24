@@ -7,6 +7,7 @@ import { PrismaService } from '../../../infrastructure/database/prisma.service';
 import { AuthorizationService } from '../../memberships/application/authorization.service';
 import { Permission } from '../../memberships/domain/permission';
 import type { GuestInput, UpdateGuestInput } from './guest.contracts';
+import { EventMutationPolicyService } from '../../events/domain/event-mutation-policy.service';
 
 @Injectable()
 export class GuestsService {
@@ -14,6 +15,7 @@ export class GuestsService {
     private readonly prisma: PrismaService,
     private readonly authorization: AuthorizationService,
     private readonly encryption: FieldEncryptionService,
+    private readonly policy: EventMutationPolicyService,
   ) {}
 
   async list(actor: AuthenticatedActor, eventId: string, cursor?: string) {
@@ -159,10 +161,11 @@ export class GuestsService {
   private async authorizeEvent(actor: AuthenticatedActor, eventId: string, permission: Permission) {
     const event = await this.prisma.event.findUnique({
       where: { id: eventId },
-      select: { id: true, clientId: true },
+      select: { id: true, clientId: true, createdByUserId: true, status: true, startAt: true, endAt: true },
     });
     if (!event) throw new ApplicationError(404, 'EVENT_NOT_FOUND', 'Event not found.');
     this.authorization.assert(actor, event.clientId, permission);
+    if (permission !== Permission.GUEST_READ) this.policy.assertMutable(actor, event, permission);
     return event;
   }
 

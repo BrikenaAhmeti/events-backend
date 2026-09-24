@@ -4,7 +4,7 @@ import type { AiProvider } from '../../../infrastructure/openai/ai.provider';
 import type { FileStorage } from '../../../infrastructure/storage/file-storage';
 import type { DocumentTextExtractorService } from '../../documents/application/document-text-extractor.service';
 import type { FileValidationService } from '../../documents/application/file-validation.service';
-import type { EventCompletenessService } from '../../events/domain/event-completeness.service';
+import { EventCompletenessService } from '../../events/domain/event-completeness.service';
 import { AuthorizationService } from '../../memberships/application/authorization.service';
 import { EventSetupAnalysisService } from './event-setup-analysis.service';
 
@@ -22,6 +22,42 @@ const actor: AuthenticatedActor = {
 };
 
 describe('EventSetupAnalysisService', () => {
+  it.each(['accept', 'reject'] as const)('persists an explicit name decision (%s) without model interpretation', async (decision) => {
+    let draft: Record<string, unknown> = {
+      event: { description: 'An annual leadership gathering.', category: 'CONFERENCE' },
+      suggestedName: 'Northstar Conference',
+    };
+    const extractEventInformation = vi.fn();
+    const transaction = {
+      conversation: { update: vi.fn(({ data }: { data: { draft: Record<string, unknown> } }) => {
+        draft = data.draft;
+        return Promise.resolve({ id: sessionId });
+      }) },
+      conversationMessage: { create: vi.fn(({ data }: { data: Record<string, unknown> }) => Promise.resolve({ id: 'message-a', ...data })) },
+    };
+    const service = new EventSetupAnalysisService({
+      client: { findUnique: vi.fn().mockResolvedValue({ name: 'Northstar' }) },
+      conversation: { findFirst: vi.fn(() => Promise.resolve({ id: sessionId, draft, setupDocuments: [], messages: [] })) },
+      $transaction: vi.fn((work: (value: typeof transaction) => unknown) => work(transaction)),
+    } as unknown as PrismaService, new AuthorizationService(), {} as FileValidationService,
+    {} as DocumentTextExtractorService, { extractEventInformation } as unknown as AiProvider,
+    new EventCompletenessService(), {} as FileStorage);
+
+    const result = await service.analyze(actor, { clientId, sessionId, nameDecision: decision }, undefined, 'request-name');
+    expect(result.nameSuggestionRejected).toBe(decision === 'reject');
+    if (decision === 'accept') {
+      expect(result.event.name).toBe('Northstar Conference');
+      expect(result.completeness.missing).not.toContain('name');
+    } else {
+      expect(result.event.name).toBeUndefined();
+      expect(result.message).toContain('Enter the event name');
+      const renamed = await service.analyze(actor, { clientId, sessionId, eventName: 'My annual forum' }, undefined, 'request-custom-name');
+      expect(renamed.event.name).toBe('My annual forum');
+      expect(renamed.nameSuggestionRejected).toBe(false);
+      expect(renamed.completeness.missing).not.toContain('name');
+    }
+    expect(extractEventInformation).not.toHaveBeenCalled();
+  });
   it('starts a persisted setup conversation that invites event and guest details directly', async () => {
     const findUnique = vi.fn().mockResolvedValue({ id: clientId, name: 'Northstar Events' });
     const createConversation = vi.fn().mockResolvedValue({
@@ -282,6 +318,10 @@ describe('EventSetupAnalysisService', () => {
       upload: vi.fn().mockResolvedValue({ objectKey: 'stored/event-plan.txt', bucket: 'events' }),
       delete: vi.fn(),
     };
+    const extract = vi.fn().mockResolvedValue({
+      text: 'Leadership forum at Riverside Hall. Organizer details to follow.',
+      metadata: { characters: 62 },
+    });
     const service = new EventSetupAnalysisService(
       {
         client: { findUnique: vi.fn().mockResolvedValue({ name: 'Northstar Events' }) },
@@ -301,12 +341,7 @@ describe('EventSetupAnalysisService', () => {
       } as unknown as PrismaService,
       new AuthorizationService(),
       { validate: vi.fn().mockReturnValue('txt') },
-      {
-        extract: vi.fn().mockResolvedValue({
-          text: 'Leadership forum at Riverside Hall. Organizer details to follow.',
-          metadata: { characters: 62 },
-        }),
-      } as unknown as DocumentTextExtractorService,
+      { extract } as unknown as DocumentTextExtractorService,
       {
         extractEventInformation: vi.fn().mockResolvedValue({
           reply: 'I found the venue. What is the event start date and time?',
@@ -355,6 +390,10 @@ describe('EventSetupAnalysisService', () => {
     expect(transaction.conversation.update.mock.calls[0]?.[0]).toMatchObject({
       data: { draft: { documentReviewPending: true } },
     });
+    extract.mockResolvedValueOnce({ text: 'x'.repeat(60_001), metadata: { characters: 60_001 } });
+    await expect(service.analyze(actor, { clientId, sessionId }, file, 'request-large'))
+      .rejects.toMatchObject({ code: 'EVENT_SOURCE_TOO_LONG' });
+    expect(storage.upload).toHaveBeenCalledOnce();
   });
 
   it('requires explicit confirmation of document details before asking for remaining details', async () => {

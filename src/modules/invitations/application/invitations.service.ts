@@ -1,6 +1,5 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Prisma } from '@prisma/client';
 import type { Environment } from '../../../common/config/environment';
 import { ApplicationError } from '../../../common/errors/application.error';
 import type { AuthenticatedActor } from '../../../common/types/request.types';
@@ -10,6 +9,8 @@ import { AuthorizationService } from '../../memberships/application/authorizatio
 import { Permission } from '../../memberships/domain/permission';
 import { QrCodeService } from './qr-code.service';
 import { GuestAccessWindowService } from '../../guest-access/application/guest-access-window.service';
+import { EventMutationPolicyService } from '../../events/domain/event-mutation-policy.service';
+import { queueGuestInvitations } from './queue-guest-invitations';
 
 @Injectable()
 export class InvitationsService {
@@ -20,6 +21,7 @@ export class InvitationsService {
     private readonly qr: QrCodeService,
     private readonly config: ConfigService<Environment, true>,
     private readonly accessWindow: GuestAccessWindowService,
+    private readonly policy: EventMutationPolicyService,
   ) {}
 
   async list(actor: AuthenticatedActor, eventId: string) {
@@ -72,14 +74,6 @@ export class InvitationsService {
         'Publish the event before sending invitations.',
       );
     const queued = await this.prisma.$transaction(async (transaction) => {
-      await transaction.$executeRaw(Prisma.sql`SELECT pg_advisory_xact_lock(hashtext(${eventId}))`);
-      const guests = await transaction.guest.findMany({
-        where: {
-          eventId,
-          invitations: { none: { status: { in: ['QUEUED', 'SENT', 'ACCEPTED'] } } },
-        },
-        select: { id: true },
-      });
       const guestCount = await transaction.guest.count({ where: { eventId } });
       if (guestCount === 0)
         throw new ApplicationError(
@@ -87,24 +81,10 @@ export class InvitationsService {
           'GUEST_LIST_EMPTY',
           'Add guests before sending invitations.',
         );
-      if (guests.length === 0) return 0;
-      for (const guest of guests) {
-        const invitation = await transaction.invitation.create({
-          data: {
-            eventId,
-            guestId: guest.id,
-            status: 'QUEUED',
-            expiresAt: this.accessWindow.closesAt(event),
-          },
-        });
-        await this.outbox.create(transaction, {
-          type: 'INVITATION_SEND',
-          aggregateId: invitation.id,
-          clientId: event.clientId,
-          eventId,
-          payload: { invitationId: invitation.id },
-        });
-      }
+      const count = await queueGuestInvitations(
+        transaction, event, this.accessWindow.closesAt(event), this.outbox,
+      );
+      if (count === 0) return 0;
       await transaction.auditLog.create({
         data: {
           actorUserId: actor.userId,
@@ -114,11 +94,11 @@ export class InvitationsService {
           entityType: 'Event',
           entityId: eventId,
           requestId,
-          metadata: { count: guests.length },
+          metadata: { count },
         },
       });
-      return guests.length;
-    });
+      return count;
+    }, { timeout: 30_000 });
     return { queued };
   }
 
@@ -159,10 +139,11 @@ export class InvitationsService {
   private async authorize(actor: AuthenticatedActor, eventId: string, permission: Permission) {
     const event = await this.prisma.event.findUnique({
       where: { id: eventId },
-      select: { id: true, clientId: true, slug: true, status: true, endAt: true },
+      select: { id: true, clientId: true, slug: true, status: true, startAt: true, endAt: true, createdByUserId: true },
     });
     if (!event) throw new ApplicationError(404, 'EVENT_NOT_FOUND', 'Event not found.');
     this.authorization.assert(actor, event.clientId, permission);
+    if (permission !== Permission.INVITATION_READ) this.policy.assertMutable(actor, event, permission);
     return event;
   }
 }

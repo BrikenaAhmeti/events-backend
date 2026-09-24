@@ -24,14 +24,14 @@ export class GuestSessionGuard implements CanActivate {
       where: {
         tokenHash: this.tokens.hash(raw),
         eventId,
-        expiresAt: { gt: new Date() },
-        revokedAt: null,
       },
       include: { event: { select: { status: true, startAt: true, endAt: true } } },
     });
     if (!session)
       throw new ApplicationError(401, 'GUEST_SESSION_INVALID', 'Guest access has expired.');
     this.accessWindow.assertActive(session.event);
+    if (session.revokedAt || session.expiresAt <= new Date())
+      throw new ApplicationError(401, 'GUEST_SESSION_INVALID', 'Guest access has expired.');
     request.guestActor = {
       sessionId: session.id,
       guestId: session.guestId,

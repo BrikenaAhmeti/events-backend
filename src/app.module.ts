@@ -26,6 +26,7 @@ import { EmailModule } from './infrastructure/email/email.module';
 import { JobsModule } from './infrastructure/jobs/jobs.module';
 import { ServerlessJobRunner } from './infrastructure/jobs/serverless-job-runner.service';
 import { ServerlessJobsInterceptor } from './infrastructure/jobs/serverless-jobs.interceptor';
+import { ScheduledJobsController } from './infrastructure/jobs/scheduled-jobs.controller';
 import { OpenAiModule } from './infrastructure/openai/openai.module';
 import { StorageModule } from './infrastructure/storage/storage.module';
 import { WebsocketModule } from './infrastructure/websocket/websocket.module';
@@ -72,6 +73,7 @@ import { WebsocketModule } from './infrastructure/websocket/websocket.module';
     WebsocketModule,
     HealthModule,
   ],
+  controllers: [ScheduledJobsController],
   providers: [
     { provide: APP_GUARD, useExisting: PlatformAuthGuard },
     { provide: APP_FILTER, useClass: GlobalExceptionFilter },

@@ -13,6 +13,8 @@ import { OutboxService } from '../../../infrastructure/jobs/outbox.service';
 import { AuthorizationService } from '../../memberships/application/authorization.service';
 import { Permission } from '../../memberships/domain/permission';
 import { validChatGuests } from '../../guests/application/guest.contracts';
+import { GuestAccessWindowService } from '../../guest-access/application/guest-access-window.service';
+import { queueGuestInvitations } from '../../invitations/application/queue-guest-invitations';
 import { EventCompletenessService } from '../domain/event-completeness.service';
 import { EventLifecycleService } from '../domain/event-lifecycle.service';
 import { EventMutationPolicyService } from '../domain/event-mutation-policy.service';
@@ -358,6 +360,7 @@ export class PublishEventHandler implements ICommandHandler<PublishEventCommand>
     private readonly completeness: EventCompletenessService,
     private readonly outbox: OutboxService,
     private readonly policy: EventMutationPolicyService,
+    private readonly accessWindow: GuestAccessWindowService,
   ) {}
 
   async execute({ actor, eventId, requestId }: PublishEventCommand) {
@@ -378,6 +381,9 @@ export class PublishEventHandler implements ICommandHandler<PublishEventCommand>
         where: { id: eventId },
         data: { status: 'PUBLISHED' },
       });
+      const invitationsQueued = await queueGuestInvitations(
+        transaction, published, this.accessWindow.closesAt(published), this.outbox,
+      );
       await this.outbox.create(transaction, {
         type: 'EVENT_PUBLISHED',
         aggregateId: eventId,
@@ -394,10 +400,11 @@ export class PublishEventHandler implements ICommandHandler<PublishEventCommand>
           entityType: 'Event',
           entityId: eventId,
           requestId,
+          metadata: { invitationsQueued },
         },
       });
-      return { ...published, completeness };
-    });
+      return { ...published, completeness, invitationsQueued };
+    }, { timeout: 30_000 });
   }
 }
 
@@ -482,7 +489,9 @@ export class GetEventsHandler implements IQueryHandler<GetEventsQuery> {
 
   async execute({ actor, input }: GetEventsQuery) {
     const resolvedClientId =
-      input.clientId ?? actor.memberships.find(({ status }) => status === 'ACTIVE')?.clientId;
+      input.clientId ?? (actor.platformRole === 'SUPER_ADMIN'
+        ? undefined
+        : actor.memberships.find(({ status }) => status === 'ACTIVE')?.clientId);
     if (!resolvedClientId && actor.platformRole !== 'SUPER_ADMIN')
       throw new ApplicationError(400, 'CLIENT_CONTEXT_REQUIRED', 'Select a client to view events.');
     if (resolvedClientId) this.authorization.assert(actor, resolvedClientId, Permission.EVENT_READ);
@@ -541,6 +550,11 @@ export class GetEventsHandler implements IQueryHandler<GetEventsQuery> {
       operationalStatus: this.lifecycle.status(event, now),
       capabilities: {
         canEdit: this.policy.canMutate(actor, event, Permission.EVENT_EDIT),
+        canManageGuests: this.policy.canMutate(actor, event, Permission.GUEST_MANAGE),
+        canImportGuests: this.policy.canMutate(actor, event, Permission.GUEST_IMPORT),
+        canSendInvitations: this.policy.canMutate(actor, event, Permission.INVITATION_SEND),
+        canRevokeInvitations: this.policy.canMutate(actor, event, Permission.INVITATION_REVOKE),
+        canPublish: this.policy.canMutate(actor, event, Permission.EVENT_PUBLISH),
         canUploadDocuments: this.policy.canMutate(actor, event, Permission.DOCUMENT_UPLOAD),
         canDelete: this.policy.canMutate(actor, event, Permission.EVENT_DELETE),
         canCancel: this.policy.canMutate(actor, event, Permission.EVENT_DELETE),
@@ -580,6 +594,11 @@ export class GetEventHandler implements IQueryHandler<GetEventQuery> {
       operationalStatus: this.lifecycle.status(event),
       capabilities: {
         canEdit: this.policy.canMutate(actor, event, Permission.EVENT_EDIT),
+        canManageGuests: this.policy.canMutate(actor, event, Permission.GUEST_MANAGE),
+        canImportGuests: this.policy.canMutate(actor, event, Permission.GUEST_IMPORT),
+        canSendInvitations: this.policy.canMutate(actor, event, Permission.INVITATION_SEND),
+        canRevokeInvitations: this.policy.canMutate(actor, event, Permission.INVITATION_REVOKE),
+        canPublish: this.policy.canMutate(actor, event, Permission.EVENT_PUBLISH),
         canUploadDocuments: this.policy.canMutate(actor, event, Permission.DOCUMENT_UPLOAD),
         canDelete: this.policy.canMutate(actor, event, Permission.EVENT_DELETE),
         canCancel: this.policy.canMutate(actor, event, Permission.EVENT_DELETE),

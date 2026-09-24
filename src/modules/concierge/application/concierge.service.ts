@@ -64,7 +64,7 @@ export class ConciergeService {
     requestId: string,
     onEvent?: (event: ConciergeStreamEvent) => void,
   ) {
-    const event = await this.loadEvent(actor.eventId);
+    const event = await this.loadEvent(actor.eventId, true);
     const guest = await this.prisma.guest.findFirst({
       where: { id: actor.guestId, eventId: actor.eventId },
     });
@@ -119,7 +119,7 @@ export class ConciergeService {
       orderBy: { createdAt: 'desc' },
       select: {
         messages: {
-          orderBy: { createdAt: 'asc' },
+          orderBy: { createdAt: 'desc' },
           take: 100,
           select: { id: true, role: true, content: true, status: true, createdAt: true },
         },
@@ -154,6 +154,12 @@ export class ConciergeService {
       input.userId,
       input.guestId,
     );
+    const recentMessages = [...(conversation.messages ?? [])].reverse()
+      .filter((message) => !this.mentionsOtherGuest(message.content, input.otherGuestIdentifiers))
+      .map((message) => ({
+        role: message.role === 'USER' ? 'user' as const : 'assistant' as const,
+        content: message.content.slice(0, 2_000),
+      }));
     await this.prisma.conversationMessage.create({
       data: {
         conversationId: conversation.id,
@@ -181,6 +187,7 @@ export class ConciergeService {
           structuredContext: this.withoutOtherGuests(
             this.structuredContext(input.event, input.question), input.otherGuestIdentifiers,
             input.audience === 'GUEST',
+            [input.event.organizerEmail, ...input.event.contacts.map(({ email }) => email)].filter((value): value is string => Boolean(value)),
           ),
           untrustedDocumentContext: semantic
             .map(({ content }) => content)
@@ -189,6 +196,7 @@ export class ConciergeService {
             .join('\n---\n')
             .slice(0, 20_000),
           privateGuestContext: input.privateContext,
+          recentMessages,
           requestId: input.requestId,
         };
       const response = input.audience === 'GUEST'
@@ -252,11 +260,11 @@ export class ConciergeService {
     input.onEvent?.(event);
   }
 
-  private async loadEvent(eventId: string) {
+  private async loadEvent(eventId: string, guest = false) {
     const event = await this.prisma.event.findUnique({
       where: { id: eventId },
       include: {
-        schedule: { orderBy: { startAt: 'asc' }, take: 100 },
+        schedule: { ...(guest ? { where: { visibility: 'SHARED' } } : {}), orderBy: { startAt: 'asc' }, take: 100 },
         facts: { take: 200 },
         contacts: { take: 50 },
         locations: { take: 50 },
@@ -272,6 +280,12 @@ export class ConciergeService {
     userId?: string,
     guestId?: string,
   ) {
+    const include = { messages: {
+      where: { status: 'COMPLETE' as const },
+      orderBy: { createdAt: 'desc' as const },
+      take: 8,
+      select: { role: true, content: true },
+    } };
     const existing = await this.prisma.conversation.findFirst({
       where: {
         eventId: event.id,
@@ -281,11 +295,13 @@ export class ConciergeService {
         guestId: guestId ?? null,
       },
       orderBy: { createdAt: 'desc' },
+      include,
     });
     return (
       existing ??
       this.prisma.conversation.create({
         data: { clientId: event.clientId, eventId: event.id, type, userId, guestId },
+        include,
       })
     );
   }
@@ -308,13 +324,15 @@ export class ConciergeService {
       select: {
         id: true,
         messages: {
-          orderBy: { createdAt: 'asc' },
+          orderBy: { createdAt: 'desc' },
           take: 100,
           select: { id: true, role: true, content: true, status: true, createdAt: true },
         },
       },
     });
-    return conversation ?? { id: null, messages: [] };
+    return conversation
+      ? { ...conversation, messages: [...conversation.messages].reverse() }
+      : { id: null, messages: [] };
   }
 
   private needsPrivateContext(question: string): boolean {
@@ -330,16 +348,17 @@ export class ConciergeService {
 
   private withoutOtherGuests(
     value: string, identifiers: string[] | undefined, guestAudience: boolean,
+    publicEmails: string[] = [],
   ): string {
     if (!guestAudience) return value;
     return value.split('\n')
       .filter((line) => !this.mentionsOtherGuest(line, identifiers) &&
-        !this.containsGuestRosterData(line))
+        !this.containsGuestRosterData(publicEmails.reduce((text, email) => text.replaceAll(email, ''), line)))
       .join('\n');
   }
 
   private containsGuestRosterData(value: string): boolean {
-    return /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}|\b(guests?|attendees?|participants?|delegates?|seating chart|seat assignment|assigned seating|table assignment|room allocation|rooming list|personal details)\b/i.test(value);
+    return /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}|\b((guest|attendee|participant|delegate)\s+(list|roster|names?|emails?|contacts?)|seating chart|seat assignment|assigned seating|table assignment|room allocation|rooming list|personal details)\b/i.test(value);
   }
 
   private asksAboutOtherGuests(question: string, identifiers: string[]): boolean {
@@ -405,7 +424,9 @@ export class ConciergeService {
           scheduleIntent || matches(item.title, item.description, item.location, item.category),
       )
       .slice(0, 30);
-    const facts = event.facts.filter((fact) => matches(fact.key, fact.value)).slice(0, 30);
+    const facts = [...event.facts].sort((left, right) =>
+      Number(matches(right.key, right.value)) - Number(matches(left.key, left.value)),
+    );
     const contacts = event.contacts
       .filter(
         (contact) =>
@@ -433,6 +454,8 @@ export class ConciergeService {
       `Accessibility: ${event.accessibilityInformation ?? 'Not provided'}`,
       `Parking: ${event.parkingInformation ?? 'Not provided'}`,
       `Wi-Fi: ${event.wifiInformation ?? 'Not provided'}`,
+      `Organizer: ${event.organizerName ?? 'Not provided'}`,
+      `Organizer email: ${event.organizerEmail ?? 'Not provided'}`,
       `Starts: ${event.startAt?.toISOString() ?? 'Not provided'}`,
       `Ends: ${event.endAt?.toISOString() ?? 'Not provided'}`,
       `Current event-local time: ${localNow}`,

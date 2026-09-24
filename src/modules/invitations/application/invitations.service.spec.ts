@@ -7,9 +7,13 @@ import { GuestAccessWindowService } from '../../guest-access/application/guest-a
 import { AuthorizationService } from '../../memberships/application/authorization.service';
 import { InvitationsService } from './invitations.service';
 import type { QrCodeService } from './qr-code.service';
+import { EventMutationPolicyService } from '../../events/domain/event-mutation-policy.service';
+import { EventLifecycleService } from '../../events/domain/event-lifecycle.service';
+import type { Prisma } from '@prisma/client';
 
 describe('InvitationsService', () => {
   it('queues one secure invitation job for every unsent guest', async () => {
+    const guests = Array.from({ length: 2_501 }, (_, index) => ({ id: `guest-${index}` }));
     const event = {
       id: 'event-a',
       clientId: 'client-a',
@@ -20,14 +24,11 @@ describe('InvitationsService', () => {
     const transaction = {
       $executeRaw: vi.fn(),
       guest: {
-        findMany: vi.fn().mockResolvedValue([{ id: 'guest-a' }, { id: 'guest-b' }]),
-        count: vi.fn().mockResolvedValue(2),
+        findMany: vi.fn().mockResolvedValue(guests),
+        count: vi.fn().mockResolvedValue(guests.length),
       },
       invitation: {
-        create: vi
-          .fn()
-          .mockResolvedValueOnce({ id: 'invitation-a' })
-          .mockResolvedValueOnce({ id: 'invitation-b' }),
+        createMany: vi.fn<(input: { data: Prisma.InvitationCreateManyInput[] }) => Promise<void>>(),
       },
       auditLog: { create: vi.fn() },
     };
@@ -35,7 +36,7 @@ describe('InvitationsService', () => {
       event: { findUnique: vi.fn().mockResolvedValue(event) },
       $transaction: vi.fn((work: (value: typeof transaction) => unknown) => work(transaction)),
     } as unknown as PrismaService;
-    const outbox = { create: vi.fn() };
+    const outbox = { createMany: vi.fn<(tx: unknown, inputs: Prisma.OutboxEventCreateManyInput[]) => Promise<void>>() };
     const service = new InvitationsService(
       prisma,
       new AuthorizationService(),
@@ -43,6 +44,7 @@ describe('InvitationsService', () => {
       {} as QrCodeService,
       { get: vi.fn() } as unknown as ConfigService<Environment, true>,
       new GuestAccessWindowService(),
+      new EventMutationPolicyService(new AuthorizationService(), new EventLifecycleService()),
     );
     const actor: AuthenticatedActor = {
       userId: 'admin-a',
@@ -61,16 +63,19 @@ describe('InvitationsService', () => {
       ],
     };
 
-    await expect(service.send(actor, 'request-a', 'event-a')).resolves.toEqual({ queued: 2 });
-    expect(transaction.invitation.create).toHaveBeenCalledTimes(2);
-    expect(outbox.create).toHaveBeenCalledTimes(2);
-    expect(transaction.invitation.create).toHaveBeenCalledWith({
-      data: {
+    await expect(service.send(actor, 'request-a', 'event-a')).resolves.toEqual({ queued: 2_501 });
+    const invitations = transaction.invitation.createMany.mock.calls.flatMap(([input]) => input.data);
+    const jobs = outbox.createMany.mock.calls.flatMap(([, inputs]) => inputs);
+    expect(invitations.map(({ guestId }) => guestId)).toEqual(guests.map(({ id }) => id));
+    expect(new Set(invitations.map(({ id }) => id)).size).toBe(guests.length);
+    expect(jobs.map(({ aggregateId, payload }) => ({ aggregateId, payload }))).toEqual(
+      invitations.map(({ id }) => ({ aggregateId: id, payload: { invitationId: id } })),
+    );
+    expect(invitations[0]).toMatchObject({
         eventId: 'event-a',
-        guestId: 'guest-a',
+        guestId: 'guest-0',
         status: 'QUEUED',
         expiresAt: new Date('2027-10-14T22:00:00Z'),
-      },
     });
   });
 });

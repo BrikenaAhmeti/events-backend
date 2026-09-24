@@ -19,6 +19,10 @@ export class OutboxService {
     return transaction.outboxEvent.create({ data: input });
   }
 
+  createMany(transaction: Prisma.TransactionClient, inputs: Prisma.OutboxEventCreateManyInput[]) {
+    return transaction.outboxEvent.createMany({ data: inputs });
+  }
+
   async dispatchBatch(): Promise<number> {
     const entries = await this.prisma.outboxEvent.findMany({
       where: { processedAt: null, availableAt: { lte: new Date() } },

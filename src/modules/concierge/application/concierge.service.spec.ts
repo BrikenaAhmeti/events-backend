@@ -7,6 +7,24 @@ import type { FieldEncryptionService } from '../../../common/security/field-encr
 import { ConciergeService, type ConciergeStreamEvent } from './concierge.service';
 
 describe('ConciergeService streaming', () => {
+  it('loads the latest guest messages in chronological order within the authenticated event and guest', async () => {
+    const findFirst = vi.fn().mockResolvedValue({ id: 'conversation-a', messages: [
+      { id: 'latest', content: 'The east entrance.', createdAt: new Date('2027-10-12T09:01:00Z') },
+      { id: 'previous', content: 'Which entrance?', createdAt: new Date('2027-10-12T09:00:00Z') },
+    ] });
+    const service = new ConciergeService(
+      { conversation: { findFirst } } as unknown as PrismaService,
+      {} as AiProvider, {} as EventKnowledgeRepository,
+      new AuthorizationService(), {} as FieldEncryptionService,
+    );
+    const result = await service.historyGuest({ eventId: 'event-a', guestId: 'guest-a', sessionId: 'session-a' });
+    expect(result.messages.map(({ id }) => id)).toEqual(['previous', 'latest']);
+    expect(findFirst.mock.calls[0]?.[0]).toMatchObject({
+      where: { eventId: 'event-a', guestId: 'guest-a', userId: null, type: 'GUEST', state: 'ACTIVE' },
+      select: { messages: { orderBy: { createdAt: 'desc' }, take: 100 } },
+    });
+  });
+
   it('shows the completed event setup and new organizer messages as one chat history', async () => {
     const actor: AuthenticatedActor = {
       userId: 'user-a',
@@ -174,20 +192,32 @@ describe('ConciergeService streaming', () => {
       timezone: 'Europe/Rome', description: null, destination: 'Rome', venue: null,
       venueAddress: null, venueDetails: null, restroomInformation: null,
       accessibilityInformation: null, parkingInformation: null, wifiInformation: null,
-      startAt: null, endAt: null, schedule: [], facts: [], contacts: [], locations: [],
+      organizerName: 'Northstar Events', organizerEmail: 'events@example.test',
+      startAt: null, endAt: null, schedule: [],
+      facts: [
+        { key: 'Restroom access', value: 'Use the lift to floor two.' },
+        { key: 'Entry', value: 'All guests should use the east entrance.' },
+      ],
+      contacts: [], locations: [],
     };
     const createMessage = vi.fn().mockImplementation(({ data }: { data: Record<string, unknown> }) =>
       Promise.resolve({ id: typeof data.id === 'string' ? data.id : 'message-a', ...data, createdAt: new Date() }),
     );
+    const findEvent = vi.fn().mockResolvedValue(event);
+    const findConversation = vi.fn().mockResolvedValue({ id: 'conversation-a', messages: [
+      { role: 'CONCIERGE', content: 'Registration opens at 08:00.' },
+      { role: 'USER', content: 'When does registration open?' },
+      { role: 'USER', content: 'Where is Alex Morgan sitting?' },
+    ] });
     const prisma = {
-      event: { findUnique: vi.fn().mockResolvedValue(event) },
+      event: { findUnique: findEvent },
       guest: {
         findFirst: vi.fn().mockResolvedValue({ id: actor.guestId, notesEncrypted: 'encrypted-note',
           accommodationEncrypted: null, travelEncrypted: null, dietaryEncrypted: null,
           accessibilityEncrypted: null }),
         findMany: vi.fn().mockResolvedValue([{ fullName: 'Alex Morgan', email: 'alex@example.test' }]),
       },
-      conversation: { findFirst: vi.fn().mockResolvedValue({ id: 'conversation-a' }) },
+      conversation: { findFirst: findConversation },
       conversationMessage: { create: createMessage },
     } as unknown as PrismaService;
     const answer = vi.fn()
@@ -213,10 +243,28 @@ describe('ConciergeService streaming', () => {
       (streamEvent) => events.push(streamEvent));
 
     expect(result.message.content).toBe('Your seat is B12.');
+    expect(findEvent).toHaveBeenCalledWith({
+      where: { id: actor.eventId },
+      include: {
+        schedule: { where: { visibility: 'SHARED' }, orderBy: { startAt: 'asc' }, take: 100 },
+        facts: { take: 200 }, contacts: { take: 50 }, locations: { take: 50 },
+      },
+    });
+    const context = answer.mock.calls[0]?.[0] as { structuredContext: string };
+    expect(context.structuredContext).toContain('Organizer email: events@example.test');
+    expect(context.structuredContext).toContain('Restroom access: Use the lift to floor two.');
+    expect(context.structuredContext).toContain('All guests should use the east entrance.');
     expect(answer.mock.calls[0]?.[0]).toMatchObject({
       privateGuestContext: 'Your arrangements: Seat B12',
       untrustedDocumentContext: 'Registration opens at 08:00.',
+      recentMessages: [
+        { role: 'user', content: 'When does registration open?' },
+        { role: 'assistant', content: 'Registration opens at 08:00.' },
+      ],
     });
+    expect(findConversation.mock.calls[0]?.[0]).toMatchObject({ where: {
+      eventId: actor.eventId, guestId: actor.guestId, userId: null, type: 'GUEST', state: 'ACTIVE',
+    } });
     expect(events.map(({ type }) => type)).toEqual(['status', 'delta', 'message']);
 
     noteText = 'Seat B12 next to Alex Morgan';

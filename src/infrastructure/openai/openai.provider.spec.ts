@@ -52,6 +52,10 @@ describe('OpenAiProvider streaming', () => {
       timezone: 'Europe/Lisbon',
       structuredContext: 'Venue: Riverside Hall',
       untrustedDocumentContext: '',
+      recentMessages: [
+        { role: 'user', content: 'Where is registration?' },
+        { role: 'assistant', content: 'Registration is at Riverside Hall.' },
+      ],
       requestId: 'request-a',
     };
     const deltas: string[] = [];
@@ -71,6 +75,9 @@ describe('OpenAiProvider streaming', () => {
       input: Array<{ role: string; content: string }>;
     };
     expect(request.input[0]?.content).toContain('Answer only questions that are relevant');
+    expect(request.input.slice(-3)).toEqual([
+      ...(input.recentMessages ?? []), { role: 'user', content: input.question },
+    ]);
     expect(request.input[0]?.content).toContain(
       'General guidance — not confirmed by the event creator:',
     );

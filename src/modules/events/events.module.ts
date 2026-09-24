@@ -16,9 +16,10 @@ import { EventPublicationWorker } from './application/event-publication.worker';
 import { EventLifecycleService } from './domain/event-lifecycle.service';
 import { EventMutationPolicyService } from './domain/event-mutation-policy.service';
 import { EventDirectoryService } from './application/event-directory.service';
+import { GuestAccessModule } from '../guest-access/guest-access.module';
 
 @Module({
-  imports: [CqrsModule],
+  imports: [CqrsModule, GuestAccessModule],
   controllers: [EventsController],
   providers: [
     EventCompletenessService,

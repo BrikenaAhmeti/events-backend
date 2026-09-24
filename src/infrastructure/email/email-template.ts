@@ -24,6 +24,7 @@ type EmailTemplateInput = {
   afterAction: string;
   notice: string;
   reason: string;
+  hostName?: string;
   qr?: { content: Buffer; eventName: string };
 };
 
@@ -80,7 +81,7 @@ export function buildEmail(input: EmailTemplateInput): EmailContent {
 <!--[if mso]><table role="presentation" width="600" cellspacing="0" cellpadding="0"><tr><td><![endif]-->
 <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:600px;table-layout:fixed;">
 <tr><td class="brand" style="padding:28px 40px;background:#16292B;border-radius:16px 16px 0 0;">
-<table role="presentation" cellspacing="0" cellpadding="0"><tr><td width="56" style="vertical-align:middle;"><a href="${e(brand.websiteUrl)}" style="text-decoration:none;"><img src="cid:feliam-logo" width="44" height="46" alt="${e(brand.productName)} logo" style="display:block;width:44px;height:46px;border-radius:9px;"></a></td><td style="vertical-align:middle;"><a href="${e(brand.websiteUrl)}" style="color:#F5F2EC;text-decoration:none;font-size:26px;font-weight:600;letter-spacing:.4px;">${e(brand.productName)}</a><div style="margin-top:5px;color:#C7D2CE;font-size:12px;line-height:18px;">Your event. Every detail.</div></td></tr></table>
+<table role="presentation" cellspacing="0" cellpadding="0"><tr><td width="56" style="vertical-align:middle;"><a href="${e(brand.websiteUrl)}" style="text-decoration:none;"><img src="cid:feliam-logo" width="44" height="46" alt="${e(brand.productName)} logo" style="display:block;width:44px;height:46px;border-radius:9px;"></a></td><td style="vertical-align:middle;"><a href="${e(brand.websiteUrl)}" style="color:#F5F2EC;text-decoration:none;font-size:26px;font-weight:600;letter-spacing:.4px;">${e(brand.productName)}</a><div style="margin-top:5px;color:#C7D2CE;font-size:12px;line-height:18px;">${input.hostName ? `Hosted by ${e(input.hostName)}` : 'Your event. Every detail.'}</div></td></tr></table>
 </td></tr>
 <tr><td class="content" style="padding:38px 40px 36px;background:#FFFFFF;border:1px solid #E1E4DF;border-top:0;border-radius:0 0 16px 16px;overflow-wrap:anywhere;">
 <p style="margin:0 0 14px;color:#527C6D;font-size:11px;line-height:18px;font-weight:700;letter-spacing:1.6px;text-transform:uppercase;">${e(input.eyebrow)}</p>
@@ -96,7 +97,7 @@ ${input.qr ? `<table role="presentation" width="100%" cellspacing="0" cellpaddin
 </td></tr>
 <tr><td class="footer" align="center" style="padding:26px 32px 0;color:#6B7770;font-size:12px;line-height:20px;">
 <p style="margin:0 0 6px;color:#344E43;font-size:14px;font-weight:700;">${e(brand.productName)}</p>
-<p style="margin:0 0 12px;">Guest concierge for travel, events and hospitality.</p>
+<p style="margin:0 0 12px;">${input.hostName ? `An invitation from ${e(input.hostName)}.` : 'Guest concierge for travel, events and hospitality.'}</p>
 <p style="margin:0 0 12px;">Need help? <a href="mailto:${e(brand.supportEmail)}" style="color:#245B50;text-decoration:underline;">${e(brand.supportEmail)}</a><br><a href="${e(brand.websiteUrl)}" style="color:#245B50;text-decoration:underline;">Visit ${e(brand.productName)}</a></p>
 <p style="margin:0;">${e(input.reason)}</p>
 </td></tr></table>

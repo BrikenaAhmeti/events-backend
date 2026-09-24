@@ -35,6 +35,28 @@ describe('EventMutationPolicyService', () => {
     endAt: new Date(Date.now() + 172_800_000),
   };
 
+  it.each(['SUPER_ADMIN', 'CLIENT_ADMIN', 'CLIENT_STAFF'] as const)('enforces the start-time boundary for %s', (role) => {
+    const scopedActor: AuthenticatedActor = {
+      ...staff,
+      platformRole: role === 'SUPER_ADMIN' ? role : null,
+      memberships: role === 'SUPER_ADMIN' ? [] : [{ ...staff.memberships[0], role }],
+    };
+    for (const permission of [Permission.EVENT_EDIT, Permission.EVENT_DELETE]) {
+      expect(service.canMutate(scopedActor, upcoming, permission)).toBe(true);
+      expect(() => service.assertMutable(scopedActor, { ...upcoming, startAt: new Date(Date.now() - 1) }, permission))
+        .toThrow('Only upcoming events can be changed.');
+    }
+  });
+
+  it('allows a client administrator to change another creator’s upcoming event but denies a different client', () => {
+    const administrator: AuthenticatedActor = {
+      ...staff, userId: 'admin-a',
+      memberships: [{ ...staff.memberships[0], role: 'CLIENT_ADMIN', permissions: [] }],
+    };
+    expect(service.canMutate(administrator, { ...upcoming, createdByUserId: 'staff-b' }, Permission.EVENT_EDIT)).toBe(true);
+    expect(service.canMutate(administrator, { ...upcoming, clientId: 'client-b' }, Permission.EVENT_EDIT)).toBe(false);
+  });
+
   it('allows staff to change their own upcoming events', () => {
     expect(service.canMutate(staff, upcoming, Permission.EVENT_EDIT)).toBe(true);
   });
@@ -45,7 +67,7 @@ describe('EventMutationPolicyService', () => {
     ).toBe(false);
   });
 
-  it('allows staff to change their own ongoing events', () => {
+  it('locks ongoing events for staff', () => {
     expect(
       service.canMutate(
         staff,
@@ -56,7 +78,7 @@ describe('EventMutationPolicyService', () => {
         },
         Permission.EVENT_EDIT,
       ),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it('locks past events for staff', () => {
@@ -73,7 +95,7 @@ describe('EventMutationPolicyService', () => {
     ).toBe(false);
   });
 
-  it('allows a client administrator to manage past events from another creator', () => {
+  it('locks past events for client administrators', () => {
     const administrator: AuthenticatedActor = {
       ...staff,
       userId: 'admin-a',
@@ -90,7 +112,7 @@ describe('EventMutationPolicyService', () => {
         },
         Permission.EVENT_DELETE,
       ),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it('keeps cancelled events closed for administrators', () => {

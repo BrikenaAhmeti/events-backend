@@ -7,6 +7,7 @@ import { Permission } from '../../memberships/domain/permission';
 import { EventCompletenessService } from '../domain/event-completeness.service';
 import { EventLifecycleService } from '../domain/event-lifecycle.service';
 import { EventMutationPolicyService } from '../domain/event-mutation-policy.service';
+import { GuestAccessWindowService } from '../../guest-access/application/guest-access-window.service';
 import {
   AddScheduleItemHandler,
   CreateEventDraftHandler,
@@ -328,6 +329,7 @@ describe('PublishEventHandler', () => {
       new EventCompletenessService(),
       { create: vi.fn() } as unknown as OutboxService,
       policy,
+      new GuestAccessWindowService(),
     );
 
     await expect(
@@ -336,9 +338,12 @@ describe('PublishEventHandler', () => {
     expect(transaction).not.toHaveBeenCalled();
   });
 
-  it('publishes atomically with an outbox event and audit entry', async () => {
+  it('publishes atomically and queues invitations for every unsent guest', async () => {
     const databaseTransaction = {
       event: { update: vi.fn().mockResolvedValue({ ...readyEvent, status: 'PUBLISHED' }) },
+      $executeRaw: vi.fn(),
+      guest: { findMany: vi.fn().mockResolvedValue([{ id: 'guest-a' }, { id: 'guest-b' }]) },
+      invitation: { createMany: vi.fn() },
       auditLog: { create: vi.fn().mockResolvedValue({ id: 'audit-a' }) },
     };
     const prisma = {
@@ -347,17 +352,25 @@ describe('PublishEventHandler', () => {
         work(databaseTransaction),
       ),
     } as unknown as PrismaService;
-    const outbox = { create: vi.fn().mockResolvedValue({ id: 'outbox-a' }) };
+    const outbox = { create: vi.fn().mockResolvedValue({ id: 'outbox-a' }), createMany: vi.fn() };
     const handler = new PublishEventHandler(
       prisma,
       new EventCompletenessService(),
       outbox as unknown as OutboxService,
       policy,
+      new GuestAccessWindowService(),
     );
 
     await expect(
       handler.execute(new PublishEventCommand(actor, 'request-a', 'event-a')),
-    ).resolves.toMatchObject({ status: 'PUBLISHED', completeness: { ready: true } });
+    ).resolves.toMatchObject({ status: 'PUBLISHED', completeness: { ready: true }, invitationsQueued: 2 });
+    expect(databaseTransaction.invitation.createMany).toHaveBeenCalledTimes(1);
+    expect(outbox.createMany).toHaveBeenCalledTimes(1);
+    expect(outbox.create).toHaveBeenCalledTimes(1);
+    expect(databaseTransaction.guest.findMany).toHaveBeenCalledWith({
+      where: { eventId: 'event-a', invitations: { none: { status: { in: ['QUEUED', 'SENT', 'ACCEPTED'] } } } },
+      select: { id: true },
+    });
     expect(outbox.create).toHaveBeenCalledWith(
       databaseTransaction,
       expect.objectContaining({ type: 'EVENT_PUBLISHED', eventId: 'event-a' }),

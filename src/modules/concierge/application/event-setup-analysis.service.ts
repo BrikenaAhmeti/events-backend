@@ -29,6 +29,8 @@ const setupSchema = z.object({
   startAt: z.iso.datetime().optional(),
   endAt: z.iso.datetime().optional(),
   timezone: z.string().trim().min(3).max(100).optional(),
+  nameDecision: z.enum(['accept', 'reject']).optional(),
+  eventName: z.string().trim().min(2).max(160).optional(),
 });
 const setupStartSchema = z.object({
   clientId: z.uuid(),
@@ -43,6 +45,7 @@ const setupDraftSchema = z.object({
   guests: z.array(chatGuestSchema).max(500).default([]),
   suggestedName: z.string().max(160).default(''),
   nameWasProvided: z.boolean().default(false),
+  nameSuggestionRejected: z.boolean().default(false),
   documentReviewPending: z.boolean().default(false),
   documentReviewBaseline: z.object({
     event: updateEventSchema.default({}),
@@ -206,6 +209,12 @@ export class EventSetupAnalysisService {
     if (!client) throw new ApplicationError(404, 'CLIENT_NOT_FOUND', 'Client not found.');
     const previous = this.readDraft(session.draft);
 
+    if (input.nameDecision || input.eventName) {
+      if (previous.documentReviewPending)
+        throw new ApplicationError(409, 'EVENT_DOCUMENT_REVIEW_REQUIRED', 'Confirm the document details before choosing an event name.');
+      return this.resolveEventName(session.id, previous, input);
+    }
+
     if (!file && input.text && previous.documentReviewPending &&
       this.confirmsDocumentReview(input.text)) {
       return this.resolveDocumentReview(session.id, previous, input.text, true);
@@ -243,6 +252,7 @@ export class EventSetupAnalysisService {
         dateHints: previous.dateHints,
         suggestedName: previous.suggestedName,
         nameWasProvided: Boolean(previous.event.name),
+        nameSuggestionRejected: previous.nameSuggestionRejected,
         completeness: this.completeness.evaluate(this.projectEvent(previous.event)),
         facts: previous.facts,
         schedule: previous.schedule,
@@ -274,6 +284,12 @@ export class EventSetupAnalysisService {
           : 'Describe the event or attach an event file to continue.',
       );
     }
+    if (meaningfulSource.length > 60_000) {
+      throw new ApplicationError(
+        400, 'EVENT_SOURCE_TOO_LONG',
+        'Please split this information into shorter files or messages (up to 60,000 characters each) so I can review every detail.',
+      );
+    }
     if (file && extractedFile) {
       savedFile = await this.saveSetupDocument(
         actor,
@@ -302,18 +318,21 @@ export class EventSetupAnalysisService {
           `${message.role === 'USER' ? 'Event creator' : 'Concierge'}: ${message.content}`,
       )
       .join('\n');
-    const source = [
+    const priorContext = [
       `Current event setup draft (document details may be unconfirmed):\n${JSON.stringify({
         event: previous.event, dateHints: previous.dateHints, facts: previous.facts,
         schedule: previous.schedule, guests: previous.guests,
       })}`,
       recentConversation ? `Recent setup conversation:\n${recentConversation}` : '',
-      input.text ? `Latest event creator message:\n${input.text}` : '',
-      fileText ? `Attached event file content:\n${fileText}` : '',
     ]
       .filter(Boolean)
       .join('\n\n')
-      .trim();
+      .slice(0, 18_000);
+    const source = [
+      priorContext,
+      input.text ? `Latest event creator message:\n${input.text}` : '',
+      fileText ? `Attached event file content:\n${fileText}` : '',
+    ].filter(Boolean).join('\n\n');
     const extracted = await this.ai.extractEventInformation(source, requestId);
     const extractedEvent = extracted.event ?? {};
     const validEventFields = Object.fromEntries(
@@ -345,10 +364,16 @@ export class EventSetupAnalysisService {
     const parsedGuests = validChatGuests(extracted.guests ?? []);
     const mayManageGuests = this.authorization.can(actor, input.clientId, Permission.GUEST_MANAGE);
     const guests = mayManageGuests
-      ? validChatGuests([...previous.guests, ...parsedGuests.guests]).guests.slice(0, 500)
+      ? validChatGuests([...previous.guests, ...parsedGuests.guests]).guests
       : [];
+    if (guests.length > 500) {
+      throw new ApplicationError(
+        400, 'SETUP_GUEST_LIMIT_EXCEEDED',
+        'The setup chat supports up to 500 guests. Create the event workspace, then import the full guest list from Guests.',
+      );
+    }
     const suggestedName =
-      event.name ?? (previous.suggestedName || this.suggestName(event, client.name));
+      event.name ?? this.suggestName(event, client.name);
     const completeness = this.completeness.evaluate(this.projectEvent(event));
     const documentReviewPending = previous.documentReviewPending || Boolean(file);
     const draft: SetupDraft = {
@@ -359,6 +384,7 @@ export class EventSetupAnalysisService {
       },
       suggestedName,
       nameWasProvided: Boolean(event.name),
+      nameSuggestionRejected: !event.name && previous.nameSuggestionRejected,
       facts,
       schedule,
       guests,
@@ -405,6 +431,7 @@ export class EventSetupAnalysisService {
       dateHints: draft.dateHints,
       suggestedName,
       nameWasProvided: Boolean(event.name),
+      nameSuggestionRejected: draft.nameSuggestionRejected,
       completeness,
       facts,
       schedule,
@@ -423,9 +450,54 @@ export class EventSetupAnalysisService {
       : {
           event: {}, dateHints: { startDate: '', endDate: '' },
           facts: [], schedule: [], guests: [], suggestedName: '',
-          nameWasProvided: false, documentReviewPending: false,
+          nameWasProvided: false, nameSuggestionRejected: false, documentReviewPending: false,
           documentReviewBaseline: null, pendingDocumentNames: [],
         };
+  }
+
+  private async resolveEventName(
+    sessionId: string,
+    previous: SetupDraft,
+    input: { nameDecision?: 'accept' | 'reject'; eventName?: string },
+  ) {
+    const rejected = input.nameDecision === 'reject';
+    const name = rejected ? undefined : input.eventName ?? previous.suggestedName;
+    if (!rejected && !name)
+      throw new ApplicationError(400, 'EVENT_NAME_REQUIRED', 'Provide an event name to continue.');
+    const draft: SetupDraft = {
+      ...previous,
+      event: { ...previous.event, name },
+      nameWasProvided: Boolean(name),
+      nameSuggestionRejected: rejected,
+    };
+    const completeness = this.completeness.evaluate(this.projectEvent(draft.event));
+    const message = rejected
+      ? 'What should this event be called? Enter the event name below.'
+      : `The event name is ${name}. ${this.buildReply(undefined, completeness)}`;
+    const messages = await this.prisma.$transaction(async (transaction) => {
+      const userMessage = await transaction.conversationMessage.create({
+        data: {
+          conversationId: sessionId, role: 'USER', status: 'COMPLETE',
+          content: rejected ? 'I would like to choose a different event name.' : `Use this event name: ${name}`,
+        },
+      });
+      await transaction.conversation.update({
+        where: { id: sessionId },
+        data: { draft: JSON.parse(JSON.stringify(draft)) as Prisma.InputJsonValue },
+      });
+      const assistantMessage = await transaction.conversationMessage.create({
+        data: { conversationId: sessionId, role: 'CONCIERGE', content: message, status: 'COMPLETE' },
+      });
+      return [userMessage, assistantMessage];
+    });
+    return {
+      sessionId, message, messages, event: draft.event, dateHints: draft.dateHints,
+      suggestedName: draft.suggestedName, nameWasProvided: draft.nameWasProvided,
+      nameSuggestionRejected: draft.nameSuggestionRejected,
+      completeness, facts: draft.facts, schedule: draft.schedule, guests: draft.guests,
+      extractedFacts: draft.facts.length, extractedScheduleItems: draft.schedule.length,
+      documentReviewPending: false, file: null,
+    };
   }
 
   private confirmsDocumentReview(text: string): boolean {
@@ -473,6 +545,7 @@ export class EventSetupAnalysisService {
       sessionId, message, messages, event: draft.event, dateHints: draft.dateHints,
       suggestedName: draft.suggestedName,
       nameWasProvided: Boolean(draft.event.name),
+      nameSuggestionRejected: draft.nameSuggestionRejected,
       completeness, facts: draft.facts, schedule: draft.schedule, guests: draft.guests,
       extractedFacts: draft.facts.length,
       extractedScheduleItems: draft.schedule.length,
@@ -543,13 +616,15 @@ export class EventSetupAnalysisService {
       .join(' ')
       .trim();
     if (completeness.ready) {
-      return `${acknowledgement || 'I captured the event details.'} Everything required is ready. Do you have any other documents about the event to share? Attach them here, or continue to guest details and publishing.`;
+      return `${acknowledgement || 'I captured the event details.'} Everything required is ready. You can add venue guidance such as entrances, floors, rooms, restrooms, accessibility, parking, and Wi-Fi, or attach more event documents. Otherwise, continue to guest details and publishing.`;
     }
     const missing = new Set(completeness.missing);
     let question: string;
-    if (['name', 'description', 'category'].some((field) => missing.has(field))) {
-      question =
-        'Send the event name, a short description, and the event type in one message, separated by commas. For example: Leadership Summit, Annual gathering for regional directors, Conference.';
+    if (missing.has('description') || missing.has('category')) {
+      const basics = ['description', 'category'].filter((field) => missing.has(field)).map((field) => missingLabels[field]);
+      question = `Tell me ${basics.join(' and ')} in one message.${missing.has('name') ? ' You can choose the suggested event name below or provide your own.' : ''}`;
+    } else if (missing.has('name')) {
+      question = 'Choose the suggested event name below, or reject it to enter your own name.';
     } else if (
       ['startAt', 'endAt', 'timezone'].some((field) => missing.has(field)) ||
       completeness.warnings.some((warning) =>

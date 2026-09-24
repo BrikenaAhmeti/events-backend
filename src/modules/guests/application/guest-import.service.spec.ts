@@ -59,4 +59,17 @@ describe('GuestImportService', () => {
       expect.objectContaining({ fullName: 'Morgan Reed', email: 'morgan@example.test' }),
     ]);
   });
+
+  it('rejects oversized spreadsheets instead of silently dropping guests', async () => {
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('Guests');
+    sheet.addRow(['Name', 'Email']);
+    for (let index = 0; index < 5_001; index += 1)
+      sheet.addRow([`Guest ${index}`, `guest${index}@example.test`]);
+    const buffer = Buffer.from(await workbook.xlsx.writeBuffer());
+    await expect(service.preview({
+      ...csv(''), originalname: 'guests.xlsx', buffer, size: buffer.length,
+      mimetype: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    })).rejects.toMatchObject({ code: 'IMPORT_ROW_LIMIT_EXCEEDED' });
+  });
 });

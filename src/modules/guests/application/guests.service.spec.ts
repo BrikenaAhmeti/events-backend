@@ -4,6 +4,8 @@ import { AuthorizationService } from '../../memberships/application/authorizatio
 import { Permission } from '../../memberships/domain/permission';
 import type { FieldEncryptionService } from '../../../common/security/field-encryption.service';
 import { GuestsService } from './guests.service';
+import { EventMutationPolicyService } from '../../events/domain/event-mutation-policy.service';
+import { EventLifecycleService } from '../../events/domain/event-lifecycle.service';
 
 const actor: AuthenticatedActor = {
   userId: 'user-a',
@@ -23,15 +25,30 @@ const actor: AuthenticatedActor = {
 };
 
 describe('GuestsService', () => {
+  it.each([
+    { createdByUserId: 'staff-b', startAt: new Date(Date.now() + 86_400_000), code: 'EVENT_OWNERSHIP_REQUIRED' },
+    { createdByUserId: actor.userId, startAt: new Date(Date.now() - 1), code: 'EVENT_CHANGES_CLOSED' },
+  ])('rejects guest mutations when the event policy denies access: $code', async ({ createdByUserId, startAt, code }) => {
+    const create = vi.fn();
+    const prisma = {
+      event: { findUnique: vi.fn().mockResolvedValue({ id: 'event-a', clientId: 'client-a', status: 'PUBLISHED', createdByUserId, startAt, endAt: new Date(Date.now() + 86_400_000) }) },
+      guest: { create },
+    } as unknown as PrismaService;
+    const service = new GuestsService(prisma, new AuthorizationService(), {} as FieldEncryptionService,
+      new EventMutationPolicyService(new AuthorizationService(), new EventLifecycleService()));
+    await expect(service.add(actor, 'request-a', 'event-a', { fullName: 'Test Guest', email: 'guest@example.test' }))
+      .rejects.toMatchObject({ code });
+    expect(create).not.toHaveBeenCalled();
+  });
   it('scopes a guest update to the exact event relationship', async () => {
     const findFirst = vi.fn().mockResolvedValue(null);
     const prisma = {
-      event: { findUnique: vi.fn().mockResolvedValue({ id: 'event-a', clientId: 'client-a' }) },
+      event: { findUnique: vi.fn().mockResolvedValue({ id: 'event-a', clientId: 'client-a', createdByUserId: actor.userId, status: 'READY', startAt: null, endAt: null }) },
       guest: { findFirst },
     } as unknown as PrismaService;
     const service = new GuestsService(prisma, new AuthorizationService(), {
       encrypt: vi.fn(),
-    } as unknown as FieldEncryptionService);
+    } as unknown as FieldEncryptionService, new EventMutationPolicyService(new AuthorizationService(), new EventLifecycleService()));
 
     await expect(
       service.update(actor, 'request-a', 'event-a', 'guest-b', { fullName: 'Updated Guest' }),

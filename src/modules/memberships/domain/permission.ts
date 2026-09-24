@@ -23,9 +23,11 @@ export const operationalPermissions: Permission[] = [
   Permission.EVENT_READ,
   Permission.EVENT_EDIT,
   Permission.EVENT_DELETE,
+  Permission.EVENT_PUBLISH,
   Permission.DOCUMENT_UPLOAD,
   Permission.GUEST_READ,
   Permission.GUEST_MANAGE,
   Permission.GUEST_IMPORT,
   Permission.INVITATION_READ,
+  Permission.INVITATION_SEND,
 ];

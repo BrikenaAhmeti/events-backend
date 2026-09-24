@@ -39,6 +39,7 @@ export type GroundedAnswerInput = {
   structuredContext: string;
   untrustedDocumentContext: string;
   privateGuestContext?: string;
+  recentMessages?: Array<{ role: 'user' | 'assistant'; content: string }>;
   requestId: string;
 };
 

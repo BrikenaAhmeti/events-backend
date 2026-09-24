@@ -12,13 +12,13 @@ import { GuestAccessWindowService } from './guest-access-window.service';
 
 export const identifyGuestSchema = z.object({
   fullName: z.string().trim().min(2).max(200),
-  email: z.email().transform((value) => value.trim().toLowerCase()),
+  email: z.string().trim().email().transform((value) => value.toLowerCase()),
 });
 
 export const invitationTokenSchema = z.object({ token: z.string().min(32).max(200) });
 export const exchangeInvitationSchema = invitationTokenSchema.extend({
   fullName: z.string().trim().min(2).max(200),
-  email: z.email().transform((value) => value.trim().toLowerCase()),
+  email: z.string().trim().email().transform((value) => value.toLowerCase()),
 });
 
 @Injectable()
@@ -110,7 +110,6 @@ export class GuestAccessService {
       data: {
         status: 'ACCEPTED',
         acceptedAt: new Date(),
-        tokenHash: null,
         tokenEncrypted: null,
       },
     });
@@ -194,12 +193,14 @@ export class GuestAccessService {
       value
         .toLowerCase()
         .normalize('NFKD')
-        .replace(/[^a-z0-9 ]/g, '')
+        .replace(/\p{M}/gu, '')
+        .replace(/[^\p{L}\p{N}\s]/gu, '')
         .split(/\s+/)
         .filter(Boolean)
         .sort()
         .join(' ');
-    return normalize(supplied) === normalize(expected);
+    const suppliedName = normalize(supplied);
+    return Boolean(suppliedName) && suppliedName === normalize(expected);
   }
 
   private notOnList(): ApplicationError {

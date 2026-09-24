@@ -47,6 +47,14 @@ The checked-in Vercel configuration uses the NestJS framework preset and the Hob
 
 For SMTP on Vercel, use port `465` or `587`, not port `25`. The durable PostgreSQL queues are drained with Vercel's post-response runtime while normal long-running deployments retain their timer-based workers. Concierge answers stream directly over authenticated HTTP and do not rely on a WebSocket connection. Socket.IO remains a best-effort enhancement for document, invitation and event progress updates.
 
+### Scheduled queue retries
+
+Serverless deployments also need a scheduled trigger: retries become eligible after a delay, and a large invitation batch can outlast one request. Set `CRON_SECRET` to a random secret of at least 32 characters and configure a trusted scheduler to call `GET /api/v1/internal/jobs/run` with `Authorization: Bearer <CRON_SECRET>` every minute. The endpoint fails closed without the secret and uses the same durable worker leases and retry limits as normal requests. Never put this secret in frontend variables or a URL.
+
+On Vercel Pro, add `{"path":"/api/v1/internal/jobs/run","schedule":"* * * * *"}` to the `crons` array in `vercel.json`; Vercel supplies the configured secret in the Authorization header. Vercel Hobby allows only daily cron schedules, so use an external scheduler for timely retries on that plan. A daily run is insufficient for events with a short access window. See [Vercel cron authentication](https://vercel.com/docs/cron-jobs/manage-cron-jobs) and [plan limits](https://vercel.com/docs/cron-jobs/usage-and-pricing). No production scheduler has been provisioned by this change.
+
+Continuously running deployments already poll the queue and do not need this endpoint. Monitor failed invitations and retry after correcting provider errors. SMTP acknowledgement does not guarantee delivery to the recipient's inbox.
+
 ## Supabase setup
 
 1. Create a development Supabase project.
@@ -61,7 +69,7 @@ For SMTP on Vercel, use port `465` or `587`, not port `25`. The durable PostgreS
 
 Set `connection_limit=3` in the pooled `DATABASE_URL` for local development and in the deployed backend's environment. A limit of `1` serializes the events page's list and filter requests as well as the dashboard's parallel queries. Keep the other connection options intact and size the limit against the database pooler's capacity and the number of backend instances. The backend runs in `fra1`, alongside the Frankfurt database.
 
-The Prisma client enables [`relationJoins`](https://www.prisma.io/docs/orm/v6/prisma-client/queries/relation-queries#relation-load-strategies-preview). Account permissions, event lists, event details and dashboard cards are loaded with database joins, reducing network round trips without caching authorization. `pnpm build` regenerates the client before compilation, so a restored Vercel dependency cache cannot leave an older client type definition in place. This client setting needs no database migration.
+The Prisma client enables [`relationJoins`](https://www.prisma.io/docs/orm/v6/prisma-client/queries/relation-queries#relation-load-strategies-preview). Account permissions, initial event pages, event details and dashboard cards use joins, reducing network round trips without caching authorization. The current Prisma runtime falls back to three bounded relation queries for cursor event pages; the read-only integration test verifies identical records, tenant scope and pagination for both strategies. `pnpm build` regenerates the client before compilation, so a restored Vercel dependency cache cannot leave an older client type definition in place. This client setting needs no database migration.
 
 Run `pnpm build` and `node scripts/profile-reads.cjs` to measure read latency using the configured database. The probe only reads data and prints timings and query counts. For comparison, use `PROFILE_POOL_SIZE=1 PROFILE_RELATIONS=query node scripts/profile-reads.cjs`, then `PROFILE_POOL_SIZE=3 PROFILE_RELATIONS=join node scripts/profile-reads.cjs`. These overrides only affect the probe. Timings include network latency from the machine running it, not browser rendering or token verification.
 
@@ -138,6 +146,7 @@ If a different embedding model changes vector dimensions, update the `DocumentCh
 | `COOKIE_DOMAIN`            | production cookies          | leave blank on localhost                          |
 | `COOKIE_SAME_SITE`         | production cookies          | use `none` for separate Vercel preview domains    |
 | `DATA_ENCRYPTION_KEY`      | sensitive guest fields      | high-entropy secret; rotation needs a data plan   |
+| `CRON_SECRET`              | scheduled queue retries     | random secret of at least 32 characters; backend only |
 | `TEST_DATABASE_URL`        | integration tests           | use a disposable non-production database          |
 | `DEMO_*_EMAIL`             | seed identities             | optional demo addresses                           |
 | `DEMO_*_PASSWORD`          | Supabase demo users         | required only to provision usable Auth identities |

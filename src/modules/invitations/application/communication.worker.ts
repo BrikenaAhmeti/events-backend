@@ -99,6 +99,13 @@ export class CommunicationWorker implements OnModuleInit, OnModuleDestroy {
       include: { guest: true, event: { include: { client: { select: { name: true } } } } },
     });
     if (!invitation?.guest || invitation.status === 'REVOKED' || invitation.sentAt) return;
+    if (invitation.event.status !== 'PUBLISHED' || !invitation.expiresAt || invitation.expiresAt <= new Date()) {
+      await this.prisma.invitation.update({
+        where: { id: invitation.id },
+        data: { status: 'REVOKED', revokedAt: new Date(), tokenHash: null, tokenEncrypted: null },
+      });
+      return;
+    }
     const issued = invitation.tokenEncrypted
       ? {
           raw: this.encryption.decrypt(invitation.tokenEncrypted),

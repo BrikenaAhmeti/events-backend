@@ -29,7 +29,9 @@ export class EventDirectoryService {
 
   async creators(actor: AuthenticatedActor, clientId?: string) {
     const resolvedClientId =
-      clientId ?? actor.memberships.find(({ status }) => status === 'ACTIVE')?.clientId;
+      clientId ?? (actor.platformRole === 'SUPER_ADMIN'
+        ? undefined
+        : actor.memberships.find(({ status }) => status === 'ACTIVE')?.clientId);
     if (!resolvedClientId && actor.platformRole !== 'SUPER_ADMIN') {
       throw new ApplicationError(400, 'CLIENT_CONTEXT_REQUIRED', 'Select a client to continue.');
     }

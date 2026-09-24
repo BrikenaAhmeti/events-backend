@@ -115,7 +115,7 @@ export class GuestImportService {
       sheet.getRow(1).eachCell({ includeEmpty: true }, (cell) => headers.push(cell.text.trim()));
       const rows: Record<string, string>[] = [];
       sheet.eachRow((row, rowNumber) => {
-        if (rowNumber === 1 || rowNumber > MAX_ROWS + 1) return;
+        if (rowNumber === 1 || rows.length > MAX_ROWS) return;
         const values: string[] = [];
         row.eachCell({ includeEmpty: true }, (cell) => values.push(cell.text.trim()));
         const record = Object.fromEntries(

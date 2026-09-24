@@ -20,10 +20,7 @@ export class EventLifecycleService {
   }
 
   isMutable(event: LifecycleEvent, now = new Date()): boolean {
-    return !['CANCELLED', 'ARCHIVED'].includes(event.status) && this.status(event, now) !== 'PAST';
-  }
-
-  isAdministrativelyMutable(event: LifecycleEvent): boolean {
-    return !['CANCELLED', 'ARCHIVED'].includes(event.status);
+    return !['CANCELLED', 'ARCHIVED'].includes(event.status) &&
+      (!event.startAt || event.startAt > now);
   }
 }

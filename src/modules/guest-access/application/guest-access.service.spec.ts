@@ -24,6 +24,75 @@ const createService = (invitation: unknown) => {
 };
 
 describe('GuestAccessService invitation security', () => {
+  it('allows a personal link to be confirmed again until the event closes and stores only hashed session tokens', async () => {
+    const token = new TokenService().issue();
+    const event = {
+      id: 'event-a', slug: 'event-a', status: 'PUBLISHED',
+      startAt: new Date(Date.now() - 3_600_000), endAt: new Date(Date.now() + 3_600_000),
+    };
+    const invitation = {
+      id: 'invitation-a', tokenHash: token.hash, tokenEncrypted: null,
+      guestId: 'guest-a', status: 'SENT', revokedAt: null,
+      expiresAt: new Date(event.endAt.getTime() + 4 * 3_600_000),
+      guest: { id: 'guest-a', fullName: 'Avery Stone', normalizedEmail: 'avery@example.test' },
+      event,
+    };
+    const create = vi.fn();
+    const cookie = vi.fn();
+    const update = vi.fn(({ data }: { data: Record<string, unknown> }) => {
+      Object.assign(invitation, data);
+      return Promise.resolve(invitation);
+    });
+    const prisma = {
+      invitation: { findUnique: vi.fn(({ where }: { where: { tokenHash: string } }) =>
+        Promise.resolve(where.tokenHash === invitation.tokenHash ? invitation : null)), update },
+      guestSession: { create },
+    } as unknown as PrismaService;
+    const service = new GuestAccessService(prisma, new TokenService(), new RateLimitService(), {
+      get: (key: string) => key === 'NODE_ENV' ? 'production' : key === 'COOKIE_SAME_SITE' ? 'lax' : '',
+    } as unknown as ConfigService<Environment, true>, new GuestAccessWindowService());
+    const identity = { token: token.raw, fullName: 'Avery Stone', email: 'AVERY@example.test' };
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await expect(service.exchange(identity, '127.0.0.1', { cookie } as unknown as Response))
+        .resolves.toEqual({ eventId: event.id, eventSlug: event.slug });
+    }
+    expect(invitation.tokenHash).toBe(token.hash);
+    expect(invitation.status).toBe('ACCEPTED');
+    expect(create).toHaveBeenCalledTimes(2);
+    const rawSession = cookie.mock.calls[0]?.[1] as string;
+    expect(create).toHaveBeenCalledWith({ data: {
+      guestId: invitation.guestId, eventId: event.id,
+      tokenHash: new TokenService().hash(rawSession), expiresAt: invitation.expiresAt,
+    } });
+    expect(cookie).toHaveBeenCalledWith(expect.any(String), rawSession,
+      expect.objectContaining({ httpOnly: true, secure: true, expires: invitation.expiresAt }));
+  });
+
+  it.each(['NOT_STARTED', 'ENDED', 'CANCELLED'] as const)('denies both access paths when the event is %s', async (state) => {
+    const event = {
+      id: 'event-a', slug: 'event-a', status: state === 'CANCELLED' ? 'CANCELLED' : 'PUBLISHED',
+      startAt: new Date(Date.now() + (state === 'NOT_STARTED' ? 3_600_000 : -10 * 3_600_000)),
+      endAt: new Date(Date.now() + (state === 'ENDED' ? -5 * 3_600_000 : 3_600_000)),
+    };
+    const guest = { id: 'guest-a', fullName: 'Avery Stone', normalizedEmail: 'avery@example.test' };
+    const create = vi.fn();
+    const service = new GuestAccessService({
+      event: { findFirst: vi.fn().mockResolvedValue(event) },
+      guest: { findUnique: vi.fn().mockResolvedValue(guest) },
+      invitation: { findUnique: vi.fn().mockResolvedValue({
+        guestId: guest.id, guest, event, status: 'SENT', revokedAt: null,
+        expiresAt: new Date(Date.now() + 24 * 3_600_000),
+      }) },
+      guestSession: { create },
+    } as unknown as PrismaService, new TokenService(), new RateLimitService(),
+    {} as ConfigService<Environment, true>, new GuestAccessWindowService());
+    const identity = { fullName: guest.fullName, email: guest.normalizedEmail };
+    await expect(service.identify(event.slug, identity, '127.0.0.1', {} as Response))
+      .rejects.toMatchObject({ code: `EVENT_${state}` });
+    await expect(service.exchange({ ...identity, token: 'a'.repeat(43) }, '127.0.0.1', {} as Response))
+      .rejects.toMatchObject({ code: `EVENT_${state}` });
+    expect(create).not.toHaveBeenCalled();
+  });
   it('returns only minimal event identity before a guest confirms access', async () => {
     const findFirst = vi.fn().mockResolvedValue({
       id: 'event-a',
