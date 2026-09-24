@@ -7,11 +7,13 @@ export async function queueGuestInvitations(
   event: { id: string; clientId: string },
   expiresAt: Date,
   outbox: OutboxService,
+  guestIds?: string[],
 ): Promise<number> {
   await transaction.$executeRaw(Prisma.sql`SELECT pg_advisory_xact_lock(hashtext(${event.id}))`);
   const guests = await transaction.guest.findMany({
     where: {
       eventId: event.id,
+      ...(guestIds ? { id: { in: guestIds } } : {}),
       invitations: { none: { status: { in: ['QUEUED', 'SENT', 'ACCEPTED'] } } },
     },
     select: { id: true },

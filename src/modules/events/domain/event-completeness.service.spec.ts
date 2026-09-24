@@ -3,6 +3,21 @@ import { EventCompletenessService } from './event-completeness.service';
 describe('EventCompletenessService', () => {
   const service = new EventCompletenessService();
 
+  it('rejects a past start for new event setup without changing existing-event completeness', () => {
+    const event = {
+      name: 'Past gathering', category: 'OTHER', description: 'A completed gathering.',
+      destination: 'Lisbon', venue: null,
+      startAt: new Date(Date.now() - 3_600_000),
+      endAt: new Date(Date.now() + 3_600_000),
+      timezone: 'Europe/Lisbon', organizerName: 'Morgan Reed',
+      organizerEmail: 'morgan@example.test',
+    };
+    expect(service.evaluate(event).ready).toBe(true);
+    expect(service.evaluate(event, { requireFutureStart: true })).toMatchObject({
+      ready: false, warnings: ['startInPast'],
+    });
+  });
+
   it('marks a fully valid event ready', () => {
     const result = service.evaluate({
       name: 'Presidents Club Mallorca',

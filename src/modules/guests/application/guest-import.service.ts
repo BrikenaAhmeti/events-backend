@@ -41,6 +41,13 @@ const headingAliases: Record<string, keyof GuestInput> = {
 
 export type GuestImportPreview = {
   mapping: Record<string, string | null>;
+  rows: Array<{
+    row: number;
+    values: Record<string, string>;
+    data: Partial<GuestInput>;
+    errors: string[];
+    duplicate: boolean;
+  }>;
   validRows: GuestInput[];
   invalidRows: Array<{ row: number; values: Record<string, string>; errors: string[] }>;
   duplicates: Array<{ row: number; email: string }>;
@@ -138,6 +145,7 @@ export class GuestImportService {
       ]),
     );
     const validRows: GuestInput[] = [];
+    const rows: GuestImportPreview['rows'] = [];
     const invalidRows: GuestImportPreview['invalidRows'] = [];
     const duplicates: GuestImportPreview['duplicates'] = [];
     const seen = new Set<string>();
@@ -149,22 +157,27 @@ export class GuestImportService {
       );
       const result = guestSchema.safeParse(mapped);
       if (!result.success) {
+        const errors = result.error.issues.map(({ message }) => message);
         invalidRows.push({
           row: index + 2,
           values: record,
-          errors: result.error.issues.map(({ message }) => message),
+          errors,
         });
+        rows.push({ row: index + 2, values: record, data: mapped, errors, duplicate: false });
         return;
       }
-      if (seen.has(result.data.email))
+      if (seen.has(result.data.email)) {
         duplicates.push({ row: index + 2, email: result.data.email });
-      else {
+        rows.push({ row: index + 2, values: record, data: result.data, errors: [], duplicate: true });
+      } else {
         seen.add(result.data.email);
         validRows.push(result.data);
+        rows.push({ row: index + 2, values: record, data: result.data, errors: [], duplicate: false });
       }
     });
     return {
       mapping,
+      rows,
       validRows,
       invalidRows,
       duplicates,

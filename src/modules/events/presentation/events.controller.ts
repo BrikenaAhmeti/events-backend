@@ -1,6 +1,7 @@
 import { Body, Controller, Delete, Get, HttpCode, Param, Patch, Post, Query } from '@nestjs/common';
 import { CommandBus, QueryBus } from '@nestjs/cqrs';
 import { ApiTags } from '@nestjs/swagger';
+import { z } from 'zod';
 import { CurrentActor, CurrentRequestId } from '../../../common/decorators/current-actor.decorator';
 import type { AuthenticatedActor } from '../../../common/types/request.types';
 import {
@@ -90,8 +91,10 @@ export class EventsController {
     @CurrentActor() actor: AuthenticatedActor,
     @CurrentRequestId() requestId: string,
     @Param('eventId') eventId: string,
+    @Body() body: unknown,
   ) {
-    return this.commands.execute(new PublishEventCommand(actor, requestId, eventId));
+    const input = z.object({ sendInvitations: z.boolean().optional() }).parse(body ?? {});
+    return this.commands.execute(new PublishEventCommand(actor, requestId, eventId, input.sendInvitations ?? true));
   }
 
   @Post(':eventId/cancel')

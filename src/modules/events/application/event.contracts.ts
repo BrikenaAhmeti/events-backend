@@ -8,6 +8,7 @@ export const eventCategories = [
   'SPORTS_TRAVEL',
   'GROUP_TOUR',
   'MEETING',
+  'MEMORIAL',
   'OTHER',
 ] as const;
 

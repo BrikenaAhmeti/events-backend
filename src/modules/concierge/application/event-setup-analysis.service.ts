@@ -69,6 +69,7 @@ const categoryLabels: Record<string, string> = {
   SPORTS_TRAVEL: 'Sports Journey',
   GROUP_TOUR: 'Group Journey',
   MEETING: 'Meeting',
+  MEMORIAL: 'Memorial',
   OTHER: 'Special Event',
 };
 
@@ -138,7 +139,7 @@ export class EventSetupAnalysisService {
           },
         });
     const resumed = Boolean(session);
-    const welcome = `Let’s set up a new event for ${client.name}. First, tell me its purpose, event type, and name if you have one. If you do not have a name, describe the goal and I’ll suggest a few you can choose from or replace with your own. You can also add the location, organizer, and guest names and email addresses, or attach a file. After the basics, I’ll show a separate date step with a calendar and time controls.`;
+    const welcome = `Let’s set up a new event for ${client.name}. Tell me the event goal, and I’ll work out its type. If you do not have a name, I’ll suggest a few you can choose from or replace with your own. You can also add the location, organizer, and guest names and email addresses, or attach a file. After the basics, I’ll show a separate date step with a calendar and time controls.`;
     if (!session) {
       session = await this.prisma.conversation.create({
         data: {
@@ -227,6 +228,12 @@ export class EventSetupAnalysisService {
       return this.resolveDocumentReview(session.id, previous, input.text, false);
     }
 
+    if (!file && input.text && !previous.documentReviewPending &&
+      /^(?:no|nope|not yet|that(?:'s| is) (?:wrong|incorrect)|something (?:is|needs) (?:wrong|changing|to change))[.!]?$/i.test(input.text.trim()) &&
+      Object.keys(previous.event).length) {
+      return this.askForCorrection(session.id, previous, input.text);
+    }
+
     if (!file && input.text && this.requestsTemplate(input.text)) {
       const userMessage = await this.prisma.conversationMessage.create({
         data: {
@@ -257,7 +264,7 @@ export class EventSetupAnalysisService {
         nameSuggestions: previous.nameSuggestions,
         nameWasProvided: Boolean(previous.event.name),
         nameSuggestionRejected: previous.nameSuggestionRejected,
-        completeness: this.completeness.evaluate(this.projectEvent(previous.event)),
+        completeness: this.setupCompleteness(previous.event),
         facts: previous.facts,
         schedule: previous.schedule,
         guests: previous.guests,
@@ -380,7 +387,7 @@ export class EventSetupAnalysisService {
       extracted.nameSuggestions ?? [], event, previous, client.name,
     );
     const suggestedName = event.name ?? nameSuggestions[0] ?? '';
-    const completeness = this.completeness.evaluate(this.projectEvent(event));
+    const completeness = this.setupCompleteness(event);
     const documentReviewPending = previous.documentReviewPending || Boolean(file);
     const draft: SetupDraft = {
       event,
@@ -391,7 +398,7 @@ export class EventSetupAnalysisService {
       suggestedName,
       nameSuggestions,
       nameWasProvided: Boolean(event.name),
-      nameSuggestionRejected: !event.name && previous.nameSuggestionRejected,
+      nameSuggestionRejected: !event.name && previous.nameSuggestionRejected && !(extracted.nameSuggestions?.length),
       facts,
       schedule,
       guests,
@@ -480,7 +487,7 @@ export class EventSetupAnalysisService {
       nameSuggestionRejected: rejected,
       nameSuggestions: rejected ? [] : previous.nameSuggestions,
     };
-    const completeness = this.completeness.evaluate(this.projectEvent(draft.event));
+    const completeness = this.setupCompleteness(draft.event);
     const message = rejected
       ? 'What should this event be called? Enter the event name below.'
       : `The event name is ${name}. ${this.buildReply(undefined, completeness)}`;
@@ -515,6 +522,29 @@ export class EventSetupAnalysisService {
     return /^(confirm(?:ed)?(?: (?:details|information|info))?|yes|looks good|all correct|that'?s correct|approved)[.!]?$/i.test(text.trim());
   }
 
+  private async askForCorrection(sessionId: string, draft: SetupDraft, text: string) {
+    const message = 'What should I change? For example, tell me “Change the location to Prishtina” or “The start date should be 12 June.” I’ll update the draft and show it again.';
+    const messages = await this.prisma.$transaction(async (transaction) => {
+      const userMessage = await transaction.conversationMessage.create({
+        data: { conversationId: sessionId, role: 'USER', content: text, status: 'COMPLETE' },
+      });
+      const assistantMessage = await transaction.conversationMessage.create({
+        data: { conversationId: sessionId, role: 'CONCIERGE', content: message, status: 'COMPLETE' },
+      });
+      return [userMessage, assistantMessage];
+    });
+    return {
+      sessionId, message, messages, event: draft.event, dateHints: draft.dateHints,
+      suggestedName: draft.suggestedName, nameSuggestions: draft.nameSuggestions,
+      nameWasProvided: draft.nameWasProvided,
+      nameSuggestionRejected: draft.nameSuggestionRejected,
+      completeness: this.setupCompleteness(draft.event),
+      facts: draft.facts, schedule: draft.schedule, guests: draft.guests,
+      extractedFacts: draft.facts.length, extractedScheduleItems: draft.schedule.length,
+      documentReviewPending: false, file: null,
+    };
+  }
+
   private rejectsDocumentReview(text: string): boolean {
     return /^(reject|ignore|discard)(?: (?:the |that )?(?:document|extracted (?:details|information)))?[.!]?$/i.test(text.trim());
   }
@@ -536,7 +566,7 @@ export class EventSetupAnalysisService {
       documentReviewBaseline: null,
       pendingDocumentNames: [],
     };
-    const completeness = this.completeness.evaluate(this.projectEvent(draft.event));
+    const completeness = this.setupCompleteness(draft.event);
     const message = confirmed
       ? `Thanks, I’ll use those confirmed details. ${this.buildReply(undefined, completeness)}`
       : `I set aside the extracted event details. The document is still saved as reference material. ${this.buildReply(undefined, completeness)}`;
@@ -622,6 +652,10 @@ export class EventSetupAnalysisService {
     };
   }
 
+  private setupCompleteness(event: SetupDraft['event']): EventCompleteness {
+    return this.completeness.evaluate(this.projectEvent(event), { requireFutureStart: true });
+  }
+
   private buildReply(reply: string | undefined, completeness: EventCompleteness, nameSuggestions: string[] = []): string {
     const acknowledgement = (reply ?? '')
       .split(/(?<=[.!?])\s+/)
@@ -643,10 +677,12 @@ export class EventSetupAnalysisService {
     } else if (
       ['startAt', 'endAt', 'timezone'].some((field) => missing.has(field)) ||
       completeness.warnings.some((warning) =>
-        ['endBeforeStart', 'invalidTimezone'].includes(warning),
+        ['endBeforeStart', 'invalidTimezone', 'startInPast'].includes(warning),
       )
     ) {
-      question = 'Next, choose one date or a date range, the start and end times, and the event timezone in the date step below.';
+      question = completeness.warnings.includes('startInPast')
+        ? 'The start time is in the past. Choose a future date and time in the date step below.'
+        : 'Next, choose one date or a date range, the start and end times, and the event timezone in the date step below.';
     } else if (missing.has('location')) {
       question =
         'Send the destination or city, venue, and venue address in one message, separated by commas. Add “not decided” for anything you do not know yet.';
@@ -770,7 +806,12 @@ export class EventSetupAnalysisService {
     if (!names.length && (event.description || event.category)) {
       const base = this.suggestName(event, clientName);
       const category = categoryLabels[event.category ?? 'OTHER'] ?? 'Special Event';
-      names.push(base, `${category}: A Shared Purpose`, `Together for ${category}`);
+      if (event.category === 'MEMORIAL') {
+        const place = event.destination?.split(',')[0] ?? event.venue ?? clientName;
+        names.push(`${place} Remembers`, 'In Memory of Those We Lost', 'Remembrance and Freedom');
+      } else {
+        names.push(base, `The ${category} in ${event.destination ?? clientName}`, `${category}: Coming Together`);
+      }
     }
     return [...new Set(names)].slice(0, 3);
   }

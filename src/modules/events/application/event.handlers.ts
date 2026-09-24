@@ -71,12 +71,14 @@ export class CreateEventDraftHandler implements ICommandHandler<CreateEventDraft
       organizerName: eventInput.organizerName ?? null,
       organizerEmail: eventInput.organizerEmail ?? null,
     };
-    const eventCompleteness = this.completeness.evaluate(projected);
+    const eventCompleteness = this.completeness.evaluate(projected, { requireFutureStart: true });
     if (!eventCompleteness.ready) {
       throw new ApplicationError(
         400,
         'EVENT_VALIDATION_FAILED',
-        'Complete all mandatory event information before creating the event.',
+        eventCompleteness.warnings.includes('startInPast')
+          ? 'Choose a future start date and time before creating the event.'
+          : 'Complete all mandatory event information before creating the event.',
         eventCompleteness,
       );
     }
@@ -113,6 +115,9 @@ export class CreateEventDraftHandler implements ICommandHandler<CreateEventDraft
       if (setupGuests.length) this.authorization.assert(actor, input.clientId, Permission.GUEST_MANAGE);
     }
     const event = await this.prisma.$transaction(async (transaction) => {
+      if (projected.startAt && projected.startAt.getTime() <= Date.now())
+        throw new ApplicationError(400, 'EVENT_VALIDATION_FAILED',
+          'Choose a future start date and time before creating the event.');
       const created = await transaction.event.create({
         data: {
           ...eventInput,
@@ -363,7 +368,7 @@ export class PublishEventHandler implements ICommandHandler<PublishEventCommand>
     private readonly accessWindow: GuestAccessWindowService,
   ) {}
 
-  async execute({ actor, eventId, requestId }: PublishEventCommand) {
+  async execute({ actor, eventId, requestId, sendInvitations }: PublishEventCommand) {
     const event = await this.prisma.event.findUnique({ where: { id: eventId } });
     if (!event) throw new ApplicationError(404, 'EVENT_NOT_FOUND', 'Event not found.');
     this.policy.assertMutable(actor, event, Permission.EVENT_PUBLISH);
@@ -381,9 +386,10 @@ export class PublishEventHandler implements ICommandHandler<PublishEventCommand>
         where: { id: eventId },
         data: { status: 'PUBLISHED' },
       });
-      const invitationsQueued = await queueGuestInvitations(
-        transaction, published, this.accessWindow.closesAt(published), this.outbox,
-      );
+      const invitationsQueued = sendInvitations
+        ? await queueGuestInvitations(
+          transaction, published, this.accessWindow.closesAt(published), this.outbox,
+        ) : 0;
       await this.outbox.create(transaction, {
         type: 'EVENT_PUBLISHED',
         aggregateId: eventId,
@@ -400,7 +406,7 @@ export class PublishEventHandler implements ICommandHandler<PublishEventCommand>
           entityType: 'Event',
           entityId: eventId,
           requestId,
-          metadata: { invitationsQueued },
+          metadata: { invitationsQueued, sendInvitations },
         },
       });
       return { ...published, completeness, invitationsQueued };

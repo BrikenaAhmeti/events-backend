@@ -85,6 +85,36 @@ describe('OpenAiProvider streaming', () => {
 });
 
 describe('OpenAiProvider event setup', () => {
+  it('keeps name proposals separate from the selected name and asks for a purpose-based type', async () => {
+    openAi.create.mockClear();
+    openAi.create.mockResolvedValueOnce({ output_text: JSON.stringify({
+      reply: 'Here are three ideas.',
+      nameSuggestions: ['In Their Memory', 'Prishtina Remembers', 'Freedom and Remembrance'],
+      event: { name: null, category: 'MEMORIAL',
+        description: 'A commemoration of people killed in the war for freedom.',
+        destination: 'Prishtina' },
+      facts: [], schedule: [], guests: [],
+    }) });
+    const config = {
+      get: (key: string) => ({ OPENAI_API_KEY: 'test-key', OPENAI_MODEL: 'test-model' })[key],
+    } as unknown as ConfigService<Environment, true>;
+    const provider = new OpenAiProvider(config);
+
+    const result = await provider.extractEventInformation(
+      'Suggest a meaningful name for remembering people killed in the war for freedom in Prishtina.',
+      'request-memorial',
+    );
+    expect(result.event?.name).toBeUndefined();
+    expect(result.event?.category).toBe('MEMORIAL');
+    expect(result.nameSuggestions).toHaveLength(3);
+    const request = openAi.create.mock.calls[0]?.[0] as unknown as {
+      input: Array<{ content: string }>;
+      text: { format: { schema: { properties: Record<string, unknown>; required: string[] } } };
+    };
+    expect(request.input[0]?.content).toContain('A request to suggest a name is not an event name');
+    expect(request.text.format.schema.required).toContain('nameSuggestions');
+  });
+
   it('returns a structured conversational reply with the extracted event details', async () => {
     openAi.create.mockClear();
     openAi.create.mockResolvedValueOnce({

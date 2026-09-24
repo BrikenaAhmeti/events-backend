@@ -37,6 +37,7 @@ export class PublishEventCommand {
     readonly actor: AuthenticatedActor,
     readonly requestId: string,
     readonly eventId: string,
+    readonly sendInvitations = true,
   ) {}
 }
 

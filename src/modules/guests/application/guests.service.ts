@@ -36,10 +36,16 @@ export class GuestsService {
         phone: true,
         guestGroup: true,
         metadata: true,
+        invitations: {
+          orderBy: { createdAt: 'desc' }, take: 1,
+          select: { id: true, status: true, sentAt: true },
+        },
         createdAt: true,
       },
     });
-    const items = records.slice(0, 50);
+    const items = records.slice(0, 50).map(({ invitations, ...guest }) => ({
+      ...guest, latestInvitation: invitations?.[0] ?? null,
+    }));
     return {
       items,
       pageInfo: {
@@ -93,9 +99,12 @@ export class GuestsService {
       existing.add(normalizedEmail);
       accepted.push(row);
     }
-    await this.prisma.$transaction(async (transaction) => {
-      for (const row of accepted)
-        await transaction.guest.create({ data: this.toCreateData(eventId, row) });
+    const guestIds = await this.prisma.$transaction(async (transaction) => {
+      const ids: string[] = [];
+      for (const row of accepted) {
+        const guest = await transaction.guest.create({ data: this.toCreateData(eventId, row) });
+        ids.push(guest.id);
+      }
       await transaction.auditLog.create({
         data: {
           actorUserId: actor.userId,
@@ -108,8 +117,9 @@ export class GuestsService {
           metadata: { accepted: accepted.length, duplicates: rows.length - accepted.length },
         },
       });
+      return ids;
     });
-    return { accepted: accepted.length, duplicates: rows.length - accepted.length, rejected: 0 };
+    return { accepted: accepted.length, duplicates: rows.length - accepted.length, rejected: 0, guestIds };
   }
 
   async update(

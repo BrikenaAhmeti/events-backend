@@ -72,6 +72,23 @@ const readyInput = {
 
 describe('CreateEventDraftHandler', () => {
   const encryption = { encrypt: (value?: string) => value ? `encrypted:${value}` : null } as FieldEncryptionService;
+  it('rejects event creation when the start time has already passed', async () => {
+    const transaction = vi.fn();
+    const handler = new CreateEventDraftHandler(
+      { $transaction: transaction } as unknown as PrismaService,
+      new AuthorizationService(), new EventCompletenessService(), encryption,
+    );
+    await expect(handler.execute(new CreateEventDraftCommand(actor, 'request-past', {
+      ...readyInput,
+      startAt: new Date(Date.now() - 3_600_000).toISOString(),
+      endAt: new Date(Date.now() + 3_600_000).toISOString(),
+    }))).rejects.toMatchObject({
+      code: 'EVENT_VALIDATION_FAILED',
+      message: 'Choose a future start date and time before creating the event.',
+    });
+    expect(transaction).not.toHaveBeenCalled();
+  });
+
   it('blocks event creation until extracted document details are confirmed', async () => {
     const transaction = vi.fn();
     const handler = new CreateEventDraftHandler(

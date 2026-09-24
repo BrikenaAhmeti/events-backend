@@ -27,7 +27,7 @@ export type EventCompleteness = {
 
 @Injectable()
 export class EventCompletenessService {
-  evaluate(event: CompletenessEvent): EventCompleteness {
+  evaluate(event: CompletenessEvent, options: { requireFutureStart?: boolean } = {}): EventCompleteness {
     const required: Array<[string, unknown]> = [
       ['name', event.name],
       ['category', event.category],
@@ -41,6 +41,8 @@ export class EventCompletenessService {
     ];
     const missing = required.filter(([, value]) => !value).map(([field]) => field);
     const warnings: string[] = [];
+    if (options.requireFutureStart && event.startAt && event.startAt.getTime() <= Date.now())
+      warnings.push('startInPast');
     if (event.startAt && event.endAt && event.endAt <= event.startAt)
       warnings.push('endBeforeStart');
     if (event.timezone && !this.isTimezone(event.timezone)) warnings.push('invalidTimezone');

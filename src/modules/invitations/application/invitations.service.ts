@@ -65,7 +65,7 @@ export class InvitationsService {
     return { url, qrSvg: await this.qr.toSvg(url) };
   }
 
-  async send(actor: AuthenticatedActor, requestId: string, eventId: string) {
+  async send(actor: AuthenticatedActor, requestId: string, eventId: string, guestIds?: string[]) {
     const event = await this.authorize(actor, eventId, Permission.INVITATION_SEND);
     if (event.status !== 'PUBLISHED')
       throw new ApplicationError(
@@ -83,6 +83,7 @@ export class InvitationsService {
         );
       const count = await queueGuestInvitations(
         transaction, event, this.accessWindow.closesAt(event), this.outbox,
+        guestIds,
       );
       if (count === 0) return 0;
       await transaction.auditLog.create({
@@ -100,6 +101,38 @@ export class InvitationsService {
       return count;
     }, { timeout: 30_000 });
     return { queued };
+  }
+
+  async resendGuest(actor: AuthenticatedActor, requestId: string, eventId: string, guestId: string) {
+    const event = await this.authorize(actor, eventId, Permission.INVITATION_SEND);
+    if (event.status !== 'PUBLISHED')
+      throw new ApplicationError(400, 'EVENT_NOT_PUBLISHED', 'Publish the event before sending invitations.');
+    return this.prisma.$transaction(async (transaction) => {
+      const guest = await transaction.guest.findFirst({ where: { id: guestId, eventId }, select: { id: true } });
+      if (!guest) throw new ApplicationError(404, 'GUEST_NOT_FOUND', 'Guest not found.');
+      const active = await transaction.invitation.findFirst({
+        where: { eventId, guestId, status: { in: ['QUEUED', 'ACCEPTED'] } },
+        select: { status: true },
+      });
+      if (active?.status === 'ACCEPTED')
+        throw new ApplicationError(409, 'INVITATION_ACCEPTED', 'This guest has already accepted an invitation.');
+      if (active?.status === 'QUEUED') return { queued: 0 };
+      await transaction.invitation.updateMany({
+        where: { eventId, guestId, status: 'SENT' },
+        data: { status: 'REVOKED', revokedAt: new Date(), tokenHash: null, tokenEncrypted: null },
+      });
+      const queued = await queueGuestInvitations(
+        transaction, event, this.accessWindow.closesAt(event), this.outbox, [guestId],
+      );
+      if (queued) await transaction.auditLog.create({
+        data: {
+          actorUserId: actor.userId, clientId: event.clientId, eventId,
+          action: 'INVITATION_RESENT', entityType: 'Guest', entityId: guestId,
+          requestId, metadata: { queued },
+        },
+      });
+      return { queued };
+    }, { timeout: 30_000 });
   }
 
   async revoke(

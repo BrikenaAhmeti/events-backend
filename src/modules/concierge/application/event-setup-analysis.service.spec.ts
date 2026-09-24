@@ -22,6 +22,105 @@ const actor: AuthenticatedActor = {
 };
 
 describe('EventSetupAnalysisService', () => {
+  it('asks for a new date when chat extracts an event start in the past', async () => {
+    const startAt = new Date(Date.now() - 3_600_000).toISOString();
+    const endAt = new Date(Date.now() + 3_600_000).toISOString();
+    const transaction = {
+      conversation: { update: vi.fn().mockResolvedValue({ id: sessionId }) },
+      conversationMessage: { create: vi.fn(({ data }: { data: Record<string, unknown> }) =>
+        Promise.resolve({ id: 'message-a', ...data })) },
+    };
+    const service = new EventSetupAnalysisService({
+      client: { findUnique: vi.fn().mockResolvedValue({ name: 'Northstar Events' }) },
+      conversation: { findFirst: vi.fn().mockResolvedValue({
+        id: sessionId, draft: {}, setupDocuments: [], messages: [],
+      }) },
+      conversationMessage: { create: transaction.conversationMessage.create },
+      $transaction: vi.fn((work: (value: typeof transaction) => unknown) => work(transaction)),
+    } as unknown as PrismaService, new AuthorizationService(), {} as FileValidationService,
+    {} as DocumentTextExtractorService, {
+      extractEventInformation: vi.fn().mockResolvedValue({
+        reply: 'I found the event details.', nameSuggestions: [],
+        event: { name: 'Past Gathering', category: 'OTHER',
+          description: 'A gathering with a past start time.', destination: 'Lisbon',
+          startAt, endAt, timezone: 'Europe/Lisbon',
+          organizerName: 'Morgan Reed', organizerEmail: 'morgan@example.test' },
+        facts: [], schedule: [], guests: [],
+      }),
+    } as unknown as AiProvider, new EventCompletenessService(), {} as FileStorage);
+
+    const result = await service.analyze(actor, {
+      clientId, sessionId, text: 'The event started an hour ago.',
+    }, undefined, 'request-past');
+    expect(result.completeness.ready).toBe(false);
+    expect(result.completeness.warnings).toContain('startInPast');
+    expect(result.message).toContain('The start time is in the past');
+  });
+
+  it('suggests names and infers a memorial type from the goal, then preserves other details during a correction', async () => {
+    let draft: Record<string, unknown> = {};
+    const extractEventInformation = vi.fn()
+      .mockResolvedValueOnce({
+        reply: 'I can suggest names for this commemoration.',
+        nameSuggestions: ['In Their Memory', 'Remembering Freedom', 'Prishtina Remembers'],
+        event: {
+          category: 'MEMORIAL',
+          description: 'A commemoration of people killed in the war for freedom.',
+          destination: 'Prishtina',
+        },
+        facts: [], schedule: [], guests: [],
+      })
+      .mockResolvedValueOnce({
+        reply: 'I changed the location.', nameSuggestions: [],
+        event: { destination: 'Gjakova' },
+        facts: [], schedule: [], guests: [],
+      });
+    const transaction = {
+      conversation: { update: vi.fn(({ data }: { data: { draft: Record<string, unknown> } }) => {
+        draft = data.draft;
+        return Promise.resolve({ id: sessionId });
+      }) },
+      conversationMessage: { create: vi.fn(({ data }: { data: Record<string, unknown> }) =>
+        Promise.resolve({ id: 'message-a', ...data })) },
+    };
+    const service = new EventSetupAnalysisService({
+      client: { findUnique: vi.fn().mockResolvedValue({ name: 'Northstar Events' }) },
+      conversation: { findFirst: vi.fn(() => Promise.resolve({
+        id: sessionId, draft, setupDocuments: [], messages: [],
+      })) },
+      conversationMessage: { create: transaction.conversationMessage.create },
+      $transaction: vi.fn((work: (value: typeof transaction) => unknown) => work(transaction)),
+    } as unknown as PrismaService, new AuthorizationService(), {} as FileValidationService,
+    {} as DocumentTextExtractorService, { extractEventInformation } as unknown as AiProvider,
+    new EventCompletenessService(), {} as FileStorage);
+
+    const proposed = await service.analyze(actor, {
+      clientId, sessionId,
+      text: 'Please suggest a meaningful name for remembering people killed in the war for freedom in Prishtina.',
+    }, undefined, 'request-goal');
+    expect(proposed.event.name).toBeUndefined();
+    expect(proposed.event.category).toBe('MEMORIAL');
+    expect(proposed.nameSuggestions).toEqual(['In Their Memory', 'Remembering Freedom', 'Prishtina Remembers']);
+    expect(proposed.message).toContain('Choose one below or write your own');
+
+    const chosen = await service.analyze(actor, {
+      clientId, sessionId, nameDecision: 'accept', eventName: 'Prishtina Remembers',
+    }, undefined, 'request-name');
+    expect(chosen.event.name).toBe('Prishtina Remembers');
+    const clarification = await service.analyze(actor, {
+      clientId, sessionId, text: 'No',
+    }, undefined, 'request-no');
+    expect(clarification.message).toContain('What should I change?');
+    expect(extractEventInformation).toHaveBeenCalledTimes(1);
+    const corrected = await service.analyze(actor, {
+      clientId, sessionId, text: 'No, change the location to Gjakova.',
+    }, undefined, 'request-correction');
+    expect(corrected.event).toMatchObject({
+      name: 'Prishtina Remembers', category: 'MEMORIAL', destination: 'Gjakova',
+    });
+    expect(extractEventInformation).toHaveBeenCalledTimes(2);
+  });
+
   it.each(['accept', 'reject'] as const)('persists an explicit name decision (%s) without model interpretation', async (decision) => {
     let draft: Record<string, unknown> = {
       event: { description: 'An annual leadership gathering.', category: 'CONFERENCE' },
@@ -98,6 +197,8 @@ describe('EventSetupAnalysisService', () => {
       data: { type: string; userId: string; messages: { create: { content: string } } };
     };
     expect(createInput.data.type).toBe('EVENT_SETUP');
+    expect(createInput.data.messages.create.content).toContain('I’ll work out its type');
+    expect(createInput.data.messages.create.content).toContain('I’ll suggest a few');
     expect(createInput.data.userId).toBe(actor.userId);
     expect(createInput.data.messages.create.content).toContain('separate date step with a calendar');
   });
@@ -468,8 +569,8 @@ describe('EventSetupAnalysisService', () => {
     expect(result.event).toMatchObject({ name: 'Leadership Forum', venue: 'Riverside Hall' });
     expect(result.completeness.ready).toBe(complete);
     if (complete) {
-      expect(result.message).toContain('Would you like to attach more event documents or add any guest details');
-      expect(result.message).toContain('If there is nothing else to add, create the event workspace');
+      expect(result.message).toContain('Please review the event name, type, purpose, dates, location, and organizer');
+      expect(result.message).toContain('Tell me anything to change');
     } else {
       expect(result.message).toContain('choose one date or a date range');
     }
