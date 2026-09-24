@@ -114,6 +114,11 @@ export class DocumentsService {
     }
   }
 
+  async assertUploadAccess(actor: AuthenticatedActor, eventId: string): Promise<void> {
+    const event = await this.authorize(actor, eventId, Permission.DOCUMENT_UPLOAD);
+    this.eventPolicy.assertMutable(actor, event, Permission.DOCUMENT_UPLOAD);
+  }
+
   async downloadUrl(actor: AuthenticatedActor, eventId: string, documentId: string) {
     const event = await this.authorize(actor, eventId, Permission.EVENT_READ);
     const document = await this.prisma.document.findFirst({

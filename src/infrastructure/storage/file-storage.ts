@@ -6,4 +6,5 @@ export abstract class FileStorage {
   abstract delete(objectKey: string): Promise<void>;
   abstract exists(objectKey: string): Promise<boolean>;
   abstract createSignedDownloadUrl(objectKey: string, expiresInSeconds: number): Promise<string>;
+  abstract createSignedUploadUrl(objectKey: string): Promise<string>;
 }

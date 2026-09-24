@@ -48,6 +48,15 @@ export class GuestAccessService {
     return { ...event, accessState: this.accessWindow.state(event) };
   }
 
+  async publicEventLink(eventId: string) {
+    const event = await this.prisma.event.findFirst({
+      where: { id: eventId, status: { in: ['PUBLISHED', 'CANCELLED'] } },
+      select: { slug: true },
+    });
+    if (!event) throw new ApplicationError(404, 'EVENT_NOT_FOUND', 'This event is not available.');
+    return { slug: event.slug };
+  }
+
   async identify(slug: string, body: unknown, ip: string | undefined, response: Response) {
     this.rateLimits.assert(`guest-identify:${ip ?? 'unknown'}:${slug}`, 8, 15 * 60 * 1000);
     const input = identifyGuestSchema.parse(body);

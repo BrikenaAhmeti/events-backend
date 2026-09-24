@@ -15,10 +15,11 @@ import { ApiConsumes, ApiTags } from '@nestjs/swagger';
 import type { Response } from 'express';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { MAX_UPLOAD_BYTES } from '../../../common/config/upload-limits';
+import { MAX_FUNCTION_UPLOAD_BYTES } from '../../../common/config/upload-limits';
 import { CurrentActor, CurrentRequestId } from '../../../common/decorators/current-actor.decorator';
 import { Public } from '../../../common/decorators/public.decorator';
 import { ApplicationError } from '../../../common/errors/application.error';
+import { PendingUploadService, uploadMetadataSchema } from '../../../infrastructure/storage/pending-upload.service';
 import { RateLimitService } from '../../../common/security/rate-limit.service';
 import type { AuthenticatedActor, RequestContext } from '../../../common/types/request.types';
 import { GuestSessionGuard } from '../../guest-access/presentation/guest-session.guard';
@@ -38,7 +39,16 @@ export class ConciergeController {
     private readonly extraction: OrganizerExtractionService,
     private readonly rateLimits: RateLimitService,
     private readonly setupAnalysis: EventSetupAnalysisService,
+    private readonly pendingUploads: PendingUploadService,
   ) {}
+
+  @Post('events/setup/uploads/sign')
+  async signSetupUpload(@CurrentActor() actor: AuthenticatedActor, @Body() body: unknown) {
+    const input = uploadMetadataSchema.extend({ clientId: z.uuid(), sessionId: z.uuid() }).parse(body);
+    this.rateLimits.assert(`concierge:setup-sign:${actor.userId}`, 20, 60_000);
+    await this.setupAnalysis.assertUploadAccess(actor, input.clientId, input.sessionId);
+    return this.pendingUploads.issue(actor, 'SETUP', input.sessionId, input);
+  }
 
   @Post('events/setup/start')
   startSetup(@CurrentActor() actor: AuthenticatedActor, @Body() body: unknown) {
@@ -48,15 +58,21 @@ export class ConciergeController {
 
   @Post('events/setup/analyze')
   @ApiConsumes('multipart/form-data')
-  @UseInterceptors(FileInterceptor('file', { limits: { files: 1, fileSize: MAX_UPLOAD_BYTES } }))
-  analyzeSetup(
+  @UseInterceptors(FileInterceptor('file', { limits: { files: 1, fileSize: MAX_FUNCTION_UPLOAD_BYTES } }))
+  async analyzeSetup(
     @CurrentActor() actor: AuthenticatedActor,
     @CurrentRequestId() requestId: string,
     @Body() body: unknown,
     @UploadedFile() file?: Express.Multer.File,
   ) {
     this.rateLimits.assert(`concierge:setup:${actor.userId}`, 10, 60_000);
-    return this.setupAnalysis.analyze(actor, body, file, requestId);
+    const uploadTicket = z.object({ uploadTicket: z.string().min(1).optional() }).parse(body).uploadTicket;
+    if (!uploadTicket) return this.setupAnalysis.analyze(actor, body, file, requestId);
+    if (file) throw new ApplicationError(400, 'INVALID_UPLOAD', 'Send one file at a time.');
+    const { sessionId } = z.object({ sessionId: z.uuid() }).parse(body);
+    const uploaded = await this.pendingUploads.consume(actor, 'SETUP', sessionId, uploadTicket);
+    try { return await this.setupAnalysis.analyze(actor, body, uploaded.file, requestId); }
+    finally { await this.pendingUploads.remove(uploaded.key); }
   }
 
   @Post('events/:eventId/concierge/messages')

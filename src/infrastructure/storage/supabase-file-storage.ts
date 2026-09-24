@@ -72,6 +72,13 @@ export class SupabaseFileStorage extends FileStorage {
     return data.signedUrl;
   }
 
+  async createSignedUploadUrl(objectKey: string): Promise<string> {
+    const { data, error } = await this.client().storage.from(this.bucket()).createSignedUploadUrl(objectKey);
+    if (error || !data?.signedUrl)
+      throw new ApplicationError(502, 'SIGNED_UPLOAD_FAILED', 'A secure upload link could not be created.');
+    return data.signedUrl;
+  }
+
   private client(): SupabaseClient {
     if (this.supabase) return this.supabase;
     const url = this.config.get('SUPABASE_URL', { infer: true });

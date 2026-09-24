@@ -133,7 +133,7 @@ describe('OpenAiProvider event setup', () => {
       input: Array<{ content: string }>;
       text: { format: { schema: { properties: Record<string, unknown>; required: string[] } } };
     };
-    expect(request.input[0]?.content).toContain('A request to suggest a name is not an event name');
+    expect(request.input[0]?.content).toContain('A request for a name suggestion is not a chosen name');
     expect(request.text.format.schema.required).toContain('nameSuggestions');
   });
 
@@ -187,6 +187,8 @@ describe('OpenAiProvider event setup', () => {
           endAt: '2026-09-23',
           startDate: '2026-09-22',
           endDate: '2026-09-23',
+          startTime: '09:00',
+          endTime: '18:00',
           organizerName: 'Alex Morgan',
           organizerEmail: 'alex@example.com',
         },
@@ -216,6 +218,8 @@ describe('OpenAiProvider event setup', () => {
     expect(result.event?.endAt).toBeUndefined();
     expect(result.event?.startDate).toBe('2026-09-22');
     expect(result.event?.endDate).toBe('2026-09-23');
+    expect(result.event?.startTime).toBe('09:00');
+    expect(result.event?.endTime).toBe('18:00');
   });
 
   it('normalizes complete offset datetimes to the UTC format used by event details', async () => {

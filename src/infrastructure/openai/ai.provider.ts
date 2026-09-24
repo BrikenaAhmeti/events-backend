@@ -17,6 +17,8 @@ export type EventExtractionCandidate = {
     endAt?: string;
     startDate?: string;
     endDate?: string;
+    startTime?: string;
+    endTime?: string;
     timezone?: string;
     organizerName?: string;
     organizerEmail?: string;

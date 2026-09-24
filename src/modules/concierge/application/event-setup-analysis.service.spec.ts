@@ -419,7 +419,7 @@ describe('EventSetupAnalysisService', () => {
       timezone: 'Europe/Lisbon',
     });
     expect(result.message).toBe(
-      'I captured the venue. Next, choose one date or a date range, the start and end times, and the event timezone in the date step below. I still need email addresses before I can add these guests: Sam Lee.',
+      'I captured the venue. Next, check the known event dates and times, and fill in anything missing in the date step below. I still need email addresses before I can add these guests: Sam Lee.',
     );
     expect(result.guests).toEqual([{ fullName: 'Alex Morgan', email: 'alex@example.test' }]);
     expect(updateConversation).toHaveBeenCalledWith(
@@ -450,8 +450,8 @@ describe('EventSetupAnalysisService', () => {
       delete: vi.fn(),
     };
     const extract = vi.fn().mockResolvedValue({
-      text: 'Leadership forum at Riverside Hall. Organizer details to follow.',
-      metadata: { characters: 62 },
+      text: 'Conferencia en Riverside Hall. 12 octubre 2027, 09:00–18:00. Organización: Morgan Reed, morgan@example.test.',
+      metadata: { characters: 110 },
     });
     const service = new EventSetupAnalysisService(
       {
@@ -475,8 +475,11 @@ describe('EventSetupAnalysisService', () => {
       { extract } as unknown as DocumentTextExtractorService,
       {
         extractEventInformation: vi.fn().mockResolvedValue({
-          reply: 'I found the venue. What is the event start date and time?',
-          event: { venue: 'Riverside Hall' },
+          reply: 'I found the venue, date, times, and organizer.',
+          event: { venue: 'Riverside Hall', startDate: '2027-10-12',
+            endDate: '2027-10-12', startTime: '09:00', endTime: '18:00',
+            timezone: 'Europe/Lisbon', organizerName: 'Morgan Reed',
+            organizerEmail: 'morgan@example.test' },
           facts: [],
           schedule: [],
         }),
@@ -518,6 +521,14 @@ describe('EventSetupAnalysisService', () => {
     expect(result.documentReviewPending).toBe(true);
     expect(result.message).toContain('Current draft event details to confirm:');
     expect(result.message).toContain('Venue: Riverside Hall');
+    expect(result.message).toContain('Start: 2027-10-12 at 09:00 (Europe/Lisbon)');
+    expect(result.message).toContain('End: 2027-10-12 at 18:00 (Europe/Lisbon)');
+    expect(result.message).toContain('Organizer: Morgan Reed');
+    expect(result.message).toContain('Organizer email: morgan@example.test');
+    expect(result.event).toMatchObject({
+      startAt: '2027-10-12T08:00:00.000Z',
+      endAt: '2027-10-12T17:00:00.000Z',
+    });
     expect(transaction.conversation.update.mock.calls[0]?.[0]).toMatchObject({
       data: { draft: { documentReviewPending: true } },
     });
@@ -572,7 +583,7 @@ describe('EventSetupAnalysisService', () => {
       expect(result.message).toContain('Please review the event name, type, purpose, dates, location, and organizer');
       expect(result.message).toContain('Tell me anything to change');
     } else {
-      expect(result.message).toContain('choose one date or a date range');
+      expect(result.message).toContain('check the known event dates and times');
     }
     expect(transaction.conversation.update.mock.calls[0]?.[0]).toMatchObject({
       data: { draft: { documentReviewPending: false } },

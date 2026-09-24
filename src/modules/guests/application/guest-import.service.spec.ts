@@ -56,7 +56,7 @@ describe('GuestImportService', () => {
     oversized.size = MAX_UPLOAD_BYTES + 1;
     await expect(service.preview(oversized)).rejects.toMatchObject({
       code: 'FILE_TOO_LARGE',
-      message: 'Guest list files must be 4 MB or smaller.',
+      message: 'Guest list files must be 20 MB or smaller.',
     });
   });
 

@@ -17,6 +17,11 @@ export class GuestAccessController {
     return this.access.publicEvent(slug);
   }
 
+  @Get('public/event-links/:eventId')
+  publicEventLink(@Param('eventId') eventId: string) {
+    return this.access.publicEventLink(eventId);
+  }
+
   @Post('public/events/:slug/access')
   identify(
     @Param('slug') slug: string,

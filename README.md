@@ -77,7 +77,8 @@ Prisma application authorization is the primary database access boundary. This i
 
 Supabase Storage uses the same `SUPABASE_URL` and backend-only `SUPABASE_SECRET_KEY` as administrative authentication. The bucket must remain private. Object keys are server generated and tenant/event scoped, original filenames are metadata only, and browsers receive only short-lived signed download URLs.
 
-On Vercel, event setup files, event documents, and guest-list imports are limited to 4 MB each. This leaves room for multipart fields under Vercel Functions' 4.5 MB request limit. Keep the private Storage bucket's file size limit at 4 MB or higher. The frontend checks file size before sending, and the backend enforces the same limit.
+On Vercel, event setup files, event documents, and guest-list imports support files up to 20 MB. Files above 4 MB use a signed, direct browser upload to the private Supabase Storage bucket, followed by authenticated backend validation and processing. Smaller files continue through the API. Keep the private bucket's file size limit at 20 MB or higher.
+Guest-list previews and confirmations must also fit within the 4 MB JSON request/response budget; very detailed lists should be split into smaller batches.
 
 ## Email setup
 

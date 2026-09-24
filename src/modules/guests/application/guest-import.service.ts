@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { parse } from 'csv-parse/sync';
 import ExcelJS from 'exceljs';
-import { MAX_UPLOAD_BYTES, MAX_UPLOAD_LABEL } from '../../../common/config/upload-limits';
+import { MAX_FUNCTION_JSON_BYTES, MAX_UPLOAD_BYTES, MAX_UPLOAD_LABEL } from '../../../common/config/upload-limits';
 import { ApplicationError } from '../../../common/errors/application.error';
 import { validateOfficeArchive } from '../../../common/security/office-archive-validation';
 import { guestSchema, type GuestInput } from './guest.contracts';
@@ -67,7 +67,14 @@ export class GuestImportService {
         'IMPORT_ROW_LIMIT_EXCEEDED',
         `Guest imports are limited to ${MAX_ROWS} rows.`,
       );
-    return this.mapRecords(records);
+    const preview = this.mapRecords(records);
+    if (Buffer.byteLength(JSON.stringify(preview)) > MAX_FUNCTION_JSON_BYTES)
+      throw new ApplicationError(
+        400,
+        'IMPORT_PREVIEW_TOO_LARGE',
+        'This guest list contains too much detail to review at once. Split it into smaller lists and upload them separately.',
+      );
+    return preview;
   }
 
   private validateFile(file: Express.Multer.File): void {

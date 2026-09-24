@@ -27,13 +27,29 @@ export class DocumentTextExtractorService {
   }
 
   private plain(content: Buffer) {
-    const text = content.toString('utf8').slice(0, 1_000_000);
+    const encoding = content[0] === 0xff && content[1] === 0xfe
+      ? 'utf-16le'
+      : content[0] === 0xfe && content[1] === 0xff ? 'utf-16be' : 'utf-8';
+    const text = new TextDecoder(encoding).decode(content).replace(/^\uFEFF/, '').slice(0, 1_000_000);
     return { text, metadata: { characters: text.length } };
   }
 
   private async docx(content: Buffer) {
-    const result = await mammoth.extractRawText({ buffer: content });
-    const text = result.value.slice(0, 1_000_000);
+    const result = await mammoth.convertToHtml({ buffer: content });
+    const text = result.value
+      .replace(/<\/t[dh]>/gi, ' | ')
+      .replace(/<\/(?:tr|p|li|h[1-6]|table)>/gi, '\n')
+      .replace(/<br\s*\/?\s*>/gi, '\n')
+      .replace(/<[^>]+>/g, '')
+      .replace(/&(#x[\da-f]+|#\d+|amp|lt|gt|quot|apos|nbsp);/gi, (entity) => {
+        if (entity.startsWith('&#x')) return String.fromCodePoint(Number.parseInt(entity.slice(3, -1), 16));
+        if (entity.startsWith('&#')) return String.fromCodePoint(Number.parseInt(entity.slice(2, -1), 10));
+        return ({ '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"',
+          '&apos;': "'", '&nbsp;': ' ' } as Record<string, string>)[entity.toLowerCase()] ?? entity;
+      })
+      .replace(/[ \t]+\n/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .slice(0, 1_000_000);
     return { text, metadata: { characters: text.length, warnings: result.messages.length } };
   }
 
@@ -52,7 +68,10 @@ export class DocumentTextExtractorService {
       lines.push(`Sheet: ${sheet.name}`);
       sheet.eachRow((row) => {
         const values: string[] = [];
-        row.eachCell({ includeEmpty: true }, (cell) => values.push(cell.text));
+        row.eachCell((cell) => {
+          const value = cell.value instanceof Date ? cell.value.toISOString() : cell.text;
+          if (value.trim()) values.push(`${cell.address}: ${value}`);
+        });
         lines.push(values.join(' | '));
       });
     });

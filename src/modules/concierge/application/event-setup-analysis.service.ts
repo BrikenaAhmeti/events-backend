@@ -21,6 +21,7 @@ import {
 import { AuthorizationService } from '../../memberships/application/authorization.service';
 import { Permission } from '../../memberships/domain/permission';
 import { chatGuestSchema, validChatGuests } from '../../guests/application/guest.contracts';
+import { eventLocalTimeToUtc, eventTimeForReview } from './event-local-time';
 
 const setupSchema = z.object({
   clientId: z.uuid(),
@@ -36,10 +37,15 @@ const setupStartSchema = z.object({
   clientId: z.uuid(),
   restart: z.boolean().optional().default(false),
 });
+const dateHintsSchema = z.object({
+  startDate: z.iso.date().or(z.literal('')),
+  endDate: z.iso.date().or(z.literal('')),
+  startTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).or(z.literal('')).default(''),
+  endTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).or(z.literal('')).default(''),
+});
 const setupDraftSchema = z.object({
   event: updateEventSchema.default({}),
-  dateHints: z.object({ startDate: z.iso.date().or(z.literal('')), endDate: z.iso.date().or(z.literal('')) })
-    .default({ startDate: '', endDate: '' }),
+  dateHints: dateHintsSchema.default({ startDate: '', endDate: '', startTime: '', endTime: '' }),
   facts: z.array(eventFactInputSchema).max(200).default([]),
   schedule: z.array(scheduleItemSchema).max(200).default([]),
   guests: z.array(chatGuestSchema).max(500).default([]),
@@ -50,8 +56,7 @@ const setupDraftSchema = z.object({
   documentReviewPending: z.boolean().default(false),
   documentReviewBaseline: z.object({
     event: updateEventSchema.default({}),
-    dateHints: z.object({ startDate: z.iso.date().or(z.literal('')), endDate: z.iso.date().or(z.literal('')) })
-      .default({ startDate: '', endDate: '' }),
+    dateHints: dateHintsSchema.default({ startDate: '', endDate: '', startTime: '', endTime: '' }),
     facts: z.array(eventFactInputSchema).max(200).default([]),
     schedule: z.array(scheduleItemSchema).max(200).default([]),
     guests: z.array(chatGuestSchema).max(500).default([]),
@@ -96,6 +101,15 @@ export class EventSetupAnalysisService {
     private readonly completeness: EventCompletenessService,
     private readonly storage: FileStorage,
   ) {}
+
+  async assertUploadAccess(actor: AuthenticatedActor, clientId: string, sessionId: string): Promise<void> {
+    this.authorization.assert(actor, clientId, Permission.EVENT_CREATE);
+    const session = await this.prisma.conversation.findFirst({
+      where: { id: sessionId, clientId, userId: actor.userId, type: 'EVENT_SETUP', state: 'ACTIVE', eventId: null },
+      select: { id: true },
+    });
+    if (!session) throw new ApplicationError(404, 'EVENT_SETUP_NOT_FOUND', 'This event setup is no longer active.');
+  }
 
   async start(actor: AuthenticatedActor, body: unknown) {
     const input = setupStartSchema.parse(body);
@@ -346,6 +360,14 @@ export class EventSetupAnalysisService {
     ].filter(Boolean).join('\n\n');
     const extracted = await this.ai.extractEventInformation(source, requestId);
     const extractedEvent = extracted.event ?? {};
+    const dateHints = {
+      startDate: extractedEvent.startDate ?? previous.dateHints.startDate,
+      endDate: extractedEvent.endDate ?? previous.dateHints.endDate,
+      startTime: extractedEvent.startTime ?? previous.dateHints.startTime,
+      endTime: extractedEvent.endTime ?? previous.dateHints.endTime,
+    };
+    if (!dateHints.endDate && dateHints.startDate && dateHints.startTime && dateHints.endTime)
+      dateHints.endDate = dateHints.startDate;
     const validEventFields = Object.fromEntries(
       Object.entries(updateEventSchema.shape).flatMap(([key, schema]) => {
         const value = extractedEvent[key as keyof typeof extractedEvent];
@@ -362,6 +384,16 @@ export class EventSetupAnalysisService {
         timezone: input.timezone,
       },
     );
+    if (event.timezone) {
+      const startAt = eventLocalTimeToUtc(dateHints.startDate, dateHints.startTime, event.timezone);
+      const endAt = eventLocalTimeToUtc(dateHints.endDate, dateHints.endTime, event.timezone);
+      if (startAt && (!event.startAt || (!extractedEvent.startAt &&
+        (extractedEvent.startDate || extractedEvent.startTime || extractedEvent.timezone || input.timezone))))
+        event.startAt = startAt;
+      if (endAt && (!event.endAt || (!extractedEvent.endAt &&
+        (extractedEvent.endDate || extractedEvent.endTime || extractedEvent.timezone || input.timezone))))
+        event.endAt = endAt;
+    }
     const extractedFacts = extracted.facts.flatMap((fact) => {
       const result = eventFactInputSchema.safeParse(fact);
       return result.success ? [result.data] : [];
@@ -391,10 +423,7 @@ export class EventSetupAnalysisService {
     const documentReviewPending = previous.documentReviewPending || Boolean(file);
     const draft: SetupDraft = {
       event,
-      dateHints: {
-        startDate: extracted.event?.startDate ?? previous.dateHints.startDate,
-        endDate: extracted.event?.endDate ?? previous.dateHints.endDate,
-      },
+      dateHints,
       suggestedName,
       nameSuggestions,
       nameWasProvided: Boolean(event.name),
@@ -416,7 +445,7 @@ export class EventSetupAnalysisService {
     };
     const message = (documentReviewPending
       ? this.buildDocumentReviewReply(draft, file?.originalname)
-      : this.buildReply(extracted.reply, completeness, nameSuggestions)) +
+      : this.buildReply(extracted.reply, completeness, nameSuggestions, draft.dateHints)) +
       (parsedGuests.missingEmails.length
         ? ` I still need email addresses before I can add these guests: ${parsedGuests.missingEmails.join(', ')}.`
         : '') +
@@ -463,7 +492,7 @@ export class EventSetupAnalysisService {
     return parsed.success
       ? parsed.data
       : {
-          event: {}, dateHints: { startDate: '', endDate: '' },
+          event: {}, dateHints: { startDate: '', endDate: '', startTime: '', endTime: '' },
           facts: [], schedule: [], guests: [], suggestedName: '',
           nameSuggestions: [],
           nameWasProvided: false, nameSuggestionRejected: false, documentReviewPending: false,
@@ -490,7 +519,7 @@ export class EventSetupAnalysisService {
     const completeness = this.setupCompleteness(draft.event);
     const message = rejected
       ? 'What should this event be called? Enter the event name below.'
-      : `The event name is ${name}. ${this.buildReply(undefined, completeness)}`;
+      : `The event name is ${name}. ${this.buildReply(undefined, completeness, [], draft.dateHints)}`;
     const messages = await this.prisma.$transaction(async (transaction) => {
       const userMessage = await transaction.conversationMessage.create({
         data: {
@@ -568,8 +597,8 @@ export class EventSetupAnalysisService {
     };
     const completeness = this.setupCompleteness(draft.event);
     const message = confirmed
-      ? `Thanks, I’ll use those confirmed details. ${this.buildReply(undefined, completeness)}`
-      : `I set aside the extracted event details. The document is still saved as reference material. ${this.buildReply(undefined, completeness)}`;
+      ? `Thanks, I’ll use those confirmed details. ${this.buildReply(undefined, completeness, [], draft.dateHints)}`
+      : `I set aside the extracted event details. The document is still saved as reference material. ${this.buildReply(undefined, completeness, [], draft.dateHints)}`;
     const messages = await this.prisma.$transaction(async (transaction) => {
       const userMessage = await transaction.conversationMessage.create({
         data: { conversationId: sessionId, role: 'USER', content: text, status: 'COMPLETE' },
@@ -609,9 +638,15 @@ export class EventSetupAnalysisService {
     };
     const details = Object.entries(draft.event).flatMap(([key, value]) =>
       typeof value === 'string' && value.trim()
-        ? [`${labels[key] ?? key}: ${value.slice(0, 300)}`]
+        ? [`${labels[key] ?? key}: ${key === 'startAt' || key === 'endAt'
+          ? eventTimeForReview(value, draft.event.timezone ?? 'UTC')
+          : value.slice(0, 300)}`]
         : [],
     );
+    if (!draft.event.startAt && (draft.dateHints.startDate || draft.dateHints.startTime))
+      details.push(`Start: ${[draft.dateHints.startDate, draft.dateHints.startTime].filter(Boolean).join(' at ')}${draft.event.timezone ? ` (${draft.event.timezone})` : ' (timezone to confirm)'}`);
+    if (!draft.event.endAt && (draft.dateHints.endDate || draft.dateHints.endTime))
+      details.push(`End: ${[draft.dateHints.endDate, draft.dateHints.endTime].filter(Boolean).join(' at ')}${draft.event.timezone ? ` (${draft.event.timezone})` : ' (timezone to confirm)'}`);
     const lines = [
       latestFileName
         ? `I read ${latestFileName}. It can be any event document; it does not need to use our template.`
@@ -656,7 +691,12 @@ export class EventSetupAnalysisService {
     return this.completeness.evaluate(this.projectEvent(event), { requireFutureStart: true });
   }
 
-  private buildReply(reply: string | undefined, completeness: EventCompleteness, nameSuggestions: string[] = []): string {
+  private buildReply(
+    reply: string | undefined,
+    completeness: EventCompleteness,
+    nameSuggestions: string[] = [],
+    dateHints?: SetupDraft['dateHints'],
+  ): string {
     const acknowledgement = (reply ?? '')
       .split(/(?<=[.!?])\s+/)
       .filter((sentence) => !sentence.includes('?'))
@@ -680,9 +720,13 @@ export class EventSetupAnalysisService {
         ['endBeforeStart', 'invalidTimezone', 'startInPast'].includes(warning),
       )
     ) {
+      const hasDatesAndTimes = Boolean(dateHints?.startDate && dateHints?.endDate &&
+        dateHints?.startTime && dateHints?.endTime);
       question = completeness.warnings.includes('startInPast')
         ? 'The start time is in the past. Choose a future date and time in the date step below.'
-        : 'Next, choose one date or a date range, the start and end times, and the event timezone in the date step below.';
+        : hasDatesAndTimes
+          ? 'I found the event dates and times. Please check them and choose the event timezone in the date step below.'
+          : 'Next, check the known event dates and times, and fill in anything missing in the date step below.';
     } else if (missing.has('location')) {
       question =
         'Send the destination or city, venue, and venue address in one message, separated by commas. Add “not decided” for anything you do not know yet.';

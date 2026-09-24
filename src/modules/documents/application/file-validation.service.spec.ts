@@ -32,7 +32,7 @@ describe('FileValidationService', () => {
   it('rejects files above the deployed upload limit', () => {
     const oversized = file('program.pdf', 'application/pdf', Buffer.from('%PDF-1.7'));
     oversized.size = MAX_UPLOAD_BYTES + 1;
-    expect(() => service.validate(oversized)).toThrow('Files must be 4 MB or smaller.');
+    expect(() => service.validate(oversized)).toThrow('Files must be 20 MB or smaller.');
   });
 
   it('rejects unsupported extensions', () => {
