@@ -1,11 +1,11 @@
 import { Injectable } from '@nestjs/common';
 import { parse } from 'csv-parse/sync';
 import ExcelJS from 'exceljs';
+import { MAX_UPLOAD_BYTES, MAX_UPLOAD_LABEL } from '../../../common/config/upload-limits';
 import { ApplicationError } from '../../../common/errors/application.error';
 import { validateOfficeArchive } from '../../../common/security/office-archive-validation';
 import { guestSchema, type GuestInput } from './guest.contracts';
 
-const MAX_FILE_SIZE = 10 * 1024 * 1024;
 const MAX_ROWS = 5_000;
 
 const headingAliases: Record<string, keyof GuestInput> = {
@@ -71,11 +71,11 @@ export class GuestImportService {
   }
 
   private validateFile(file: Express.Multer.File): void {
-    if (file.size > MAX_FILE_SIZE)
+    if (file.size > MAX_UPLOAD_BYTES)
       throw new ApplicationError(
         400,
         'FILE_TOO_LARGE',
-        'Guest list files must be 10 MB or smaller.',
+        `Guest list files must be ${MAX_UPLOAD_LABEL} or smaller.`,
       );
     const extension = file.originalname.toLowerCase().split('.').at(-1);
     if (!extension || !['csv', 'xlsx'].includes(extension))

@@ -15,6 +15,7 @@ import { ApiConsumes, ApiTags } from '@nestjs/swagger';
 import type { Response } from 'express';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
+import { MAX_UPLOAD_BYTES } from '../../../common/config/upload-limits';
 import { CurrentActor, CurrentRequestId } from '../../../common/decorators/current-actor.decorator';
 import { Public } from '../../../common/decorators/public.decorator';
 import { ApplicationError } from '../../../common/errors/application.error';
@@ -47,7 +48,7 @@ export class ConciergeController {
 
   @Post('events/setup/analyze')
   @ApiConsumes('multipart/form-data')
-  @UseInterceptors(FileInterceptor('file', { limits: { files: 1, fileSize: 20 * 1024 * 1024 } }))
+  @UseInterceptors(FileInterceptor('file', { limits: { files: 1, fileSize: MAX_UPLOAD_BYTES } }))
   analyzeSetup(
     @CurrentActor() actor: AuthenticatedActor,
     @CurrentRequestId() requestId: string,

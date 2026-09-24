@@ -1,8 +1,7 @@
 import { Injectable } from '@nestjs/common';
+import { MAX_UPLOAD_BYTES, MAX_UPLOAD_LABEL } from '../../../common/config/upload-limits';
 import { ApplicationError } from '../../../common/errors/application.error';
 import { validateOfficeArchive } from '../../../common/security/office-archive-validation';
-
-const MAX_SIZE = 20 * 1024 * 1024;
 
 const formats: Record<string, { mime: string[]; signature: (buffer: Buffer) => boolean }> = {
   pdf: {
@@ -34,8 +33,8 @@ const formats: Record<string, { mime: string[]; signature: (buffer: Buffer) => b
 export class FileValidationService {
   validate(file: Express.Multer.File): string {
     if (!file) throw new ApplicationError(400, 'FILE_REQUIRED', 'Choose a file to upload.');
-    if (file.size <= 0 || file.size > MAX_SIZE)
-      throw new ApplicationError(400, 'FILE_TOO_LARGE', 'Files must be 20 MB or smaller.');
+    if (file.size <= 0 || file.size > MAX_UPLOAD_BYTES)
+      throw new ApplicationError(400, 'FILE_TOO_LARGE', `Files must be ${MAX_UPLOAD_LABEL} or smaller.`);
     const extension = file.originalname.toLowerCase().split('.').at(-1) ?? '';
     const format = formats[extension];
     if (!format)

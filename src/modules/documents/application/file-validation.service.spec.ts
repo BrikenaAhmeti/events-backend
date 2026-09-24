@@ -1,4 +1,5 @@
 import { FileValidationService } from './file-validation.service';
+import { MAX_UPLOAD_BYTES } from '../../../common/config/upload-limits';
 
 const file = (name: string, mimetype: string, buffer: Buffer): Express.Multer.File => ({
   fieldname: 'file',
@@ -26,6 +27,12 @@ describe('FileValidationService', () => {
     expect(() =>
       service.validate(file('program.pdf', 'application/pdf', Buffer.from('MZ executable'))),
     ).toThrow('invalid');
+  });
+
+  it('rejects files above the deployed upload limit', () => {
+    const oversized = file('program.pdf', 'application/pdf', Buffer.from('%PDF-1.7'));
+    oversized.size = MAX_UPLOAD_BYTES + 1;
+    expect(() => service.validate(oversized)).toThrow('Files must be 4 MB or smaller.');
   });
 
   it('rejects unsupported extensions', () => {

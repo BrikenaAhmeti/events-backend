@@ -11,6 +11,7 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiConsumes, ApiTags } from '@nestjs/swagger';
+import { MAX_UPLOAD_BYTES } from '../../../common/config/upload-limits';
 import { CurrentActor, CurrentRequestId } from '../../../common/decorators/current-actor.decorator';
 import type { AuthenticatedActor } from '../../../common/types/request.types';
 import { guestSchema, importGuestsSchema, updateGuestSchema } from '../application/guest.contracts';
@@ -57,7 +58,7 @@ export class GuestsController {
 
   @Post('imports/preview')
   @ApiConsumes('multipart/form-data')
-  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 10 * 1024 * 1024, files: 1 } }))
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_UPLOAD_BYTES, files: 1 } }))
   async preview(
     @CurrentActor() actor: AuthenticatedActor,
     @Param('eventId') eventId: string,

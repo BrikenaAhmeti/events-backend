@@ -1,5 +1,6 @@
 import { GuestImportService } from './guest-import.service';
 import ExcelJS from 'exceljs';
+import { MAX_UPLOAD_BYTES } from '../../../common/config/upload-limits';
 
 const csv = (content: string): Express.Multer.File => {
   const buffer = Buffer.from(content);
@@ -39,11 +40,24 @@ describe('GuestImportService', () => {
       ),
     );
     expect(preview.summary).toEqual({ total: 3, valid: 1, invalid: 1, duplicates: 1 });
-    expect(preview.rows).toEqual([
-      expect.objectContaining({ row: 2, data: expect.objectContaining({ email: 'avery@example.test' }), duplicate: false }),
-      expect.objectContaining({ row: 3, duplicate: true }),
-      expect.objectContaining({ row: 4, values: expect.objectContaining({ Email: 'invalid' }), errors: expect.any(Array) }),
-    ]);
+    expect(preview.rows).toHaveLength(3);
+    expect(preview.rows[0]?.row).toBe(2);
+    expect(preview.rows[0]?.data.email).toBe('avery@example.test');
+    expect(preview.rows[0]?.duplicate).toBe(false);
+    expect(preview.rows[1]?.row).toBe(3);
+    expect(preview.rows[1]?.duplicate).toBe(true);
+    expect(preview.rows[2]?.row).toBe(4);
+    expect(preview.rows[2]?.values.Email).toBe('invalid');
+    expect(preview.rows[2]?.errors.length).toBeGreaterThan(0);
+  });
+
+  it('rejects guest lists above the deployed upload limit', async () => {
+    const oversized = csv('Name,Email\nAvery Stone,avery@example.test');
+    oversized.size = MAX_UPLOAD_BYTES + 1;
+    await expect(service.preview(oversized)).rejects.toMatchObject({
+      code: 'FILE_TOO_LARGE',
+      message: 'Guest list files must be 4 MB or smaller.',
+    });
   });
 
   it('parses a bounded XLSX guest list', async () => {

@@ -77,6 +77,8 @@ Prisma application authorization is the primary database access boundary. This i
 
 Supabase Storage uses the same `SUPABASE_URL` and backend-only `SUPABASE_SECRET_KEY` as administrative authentication. The bucket must remain private. Object keys are server generated and tenant/event scoped, original filenames are metadata only, and browsers receive only short-lived signed download URLs.
 
+On Vercel, event setup files, event documents, and guest-list imports are limited to 4 MB each. This leaves room for multipart fields under Vercel Functions' 4.5 MB request limit. Keep the private Storage bucket's file size limit at 4 MB or higher. The frontend checks file size before sending, and the backend enforces the same limit.
+
 ## Email setup
 
 SMTP is the default provider. Fill `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASSWORD` and `EMAIL_FROM`. Port `587` normally uses `SMTP_SECURE=false` with STARTTLS; port `465` normally uses `SMTP_SECURE=true`. Vercel blocks outbound SMTP port `25`, so use `465` or `587`. Staff and guest mail is processed by the PostgreSQL worker with stable message identifiers and bounded retries. Password recovery uses a Supabase-generated recovery token delivered through the same selected `EmailProvider`, so the application SMTP configuration covers account recovery too.
