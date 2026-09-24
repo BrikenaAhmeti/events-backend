@@ -24,7 +24,7 @@ const createService = (invitation: unknown) => {
 };
 
 describe('GuestAccessService invitation security', () => {
-  it('allows a personal link to be confirmed again until the event closes and stores only hashed session tokens', async () => {
+  it('opens a personal link with its token alone, including on return visits, and stores only hashed session tokens', async () => {
     const token = new TokenService().issue();
     const event = {
       id: 'event-a', slug: 'event-a', status: 'PUBLISHED',
@@ -51,11 +51,10 @@ describe('GuestAccessService invitation security', () => {
     const service = new GuestAccessService(prisma, new TokenService(), new RateLimitService(), {
       get: (key: string) => key === 'NODE_ENV' ? 'production' : key === 'COOKIE_SAME_SITE' ? 'lax' : '',
     } as unknown as ConfigService<Environment, true>, new GuestAccessWindowService());
-    const identity = { token: token.raw, fullName: 'Avery Stone', email: 'AVERY@example.test' };
     await expect(service.invitationPreview({ token: token.raw }, '127.0.0.1'))
-      .resolves.toMatchObject({ event: { accessState: 'ACTIVE' } });
+      .resolves.toMatchObject({ event: { accessState: 'ACTIVE' }, requiresConfirmation: false });
     for (let attempt = 0; attempt < 2; attempt += 1) {
-      await expect(service.exchange(identity, '127.0.0.1', { cookie } as unknown as Response))
+      await expect(service.exchange({ token: token.raw }, '127.0.0.1', { cookie } as unknown as Response))
         .resolves.toEqual({ eventId: event.id, eventSlug: event.slug });
     }
     expect(invitation.tokenHash).toBe(token.hash);
@@ -91,7 +90,7 @@ describe('GuestAccessService invitation security', () => {
     const identity = { fullName: guest.fullName, email: guest.normalizedEmail };
     await expect(service.identify(event.slug, identity, '127.0.0.1', {} as Response))
       .rejects.toMatchObject({ code: `EVENT_${state}` });
-    await expect(service.exchange({ ...identity, token: 'a'.repeat(43) }, '127.0.0.1', {} as Response))
+    await expect(service.exchange({ token: 'a'.repeat(43) }, '127.0.0.1', {} as Response))
       .rejects.toMatchObject({ code: `EVENT_${state}` });
     expect(create).not.toHaveBeenCalled();
   });
@@ -166,7 +165,7 @@ describe('GuestAccessService invitation security', () => {
     });
     await expect(
       service.exchange(
-        { token: 'a'.repeat(40), fullName: 'Avery Stone', email: 'avery@example.test' },
+        { token: 'a'.repeat(40) },
         '127.0.0.1',
         {} as Response,
       ),
@@ -183,7 +182,7 @@ describe('GuestAccessService invitation security', () => {
     });
     await expect(
       service.exchange(
-        { token: 'b'.repeat(40), fullName: 'Avery Stone', email: 'avery@example.test' },
+        { token: 'b'.repeat(40) },
         '127.0.0.2',
         {} as Response,
       ),
@@ -227,10 +226,10 @@ describe('GuestAccessService invitation security', () => {
     );
   });
 
-  it('requires the complete guest name as well as the exact email', async () => {
+  it('rejects a queued personal invitation before its email has been sent', async () => {
     const service = createService({
       guestId: 'guest-a',
-      status: 'SENT',
+      status: 'QUEUED',
       revokedAt: null,
       expiresAt: new Date(Date.now() + 60 * 60 * 1000),
       guest: {
@@ -249,10 +248,29 @@ describe('GuestAccessService invitation security', () => {
 
     await expect(
       service.exchange(
-        { token: 'c'.repeat(40), fullName: 'Avery Other', email: 'avery@example.test' },
+        { token: 'c'.repeat(40) },
         '127.0.0.3',
         {} as Response,
       ),
     ).rejects.toMatchObject({ code: 'INVITATION_INVALID' });
+  });
+
+  it('still requires the listed name and email for a shared event link', async () => {
+    const event = {
+      id: 'event-a', slug: 'event-a', status: 'PUBLISHED',
+      startAt: new Date(Date.now() + 3_600_000), endAt: new Date(Date.now() + 2 * 3_600_000),
+    };
+    const create = vi.fn();
+    const service = new GuestAccessService({
+      event: { findFirst: vi.fn().mockResolvedValue(event) },
+      guest: { findUnique: vi.fn().mockResolvedValue({ id: 'guest-a', fullName: 'Avery Stone' }) },
+      guestSession: { create },
+    } as unknown as PrismaService, new TokenService(), new RateLimitService(),
+    {} as ConfigService<Environment, true>, new GuestAccessWindowService());
+    await expect(service.identify(event.slug, { fullName: 'Avery Other', email: 'avery@example.test' },
+      '127.0.0.4', {} as Response)).rejects.toMatchObject({ code: 'GUEST_NOT_RECOGNIZED' });
+    await expect(service.identify(event.slug, { fullName: 'Avery Stone' },
+      '127.0.0.4', {} as Response)).rejects.toThrow();
+    expect(create).not.toHaveBeenCalled();
   });
 });

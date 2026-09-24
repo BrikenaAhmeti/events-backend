@@ -16,10 +16,6 @@ export const identifyGuestSchema = z.object({
 });
 
 export const invitationTokenSchema = z.object({ token: z.string().min(32).max(200) });
-export const exchangeInvitationSchema = invitationTokenSchema.extend({
-  fullName: z.string().trim().min(2).max(200),
-  email: z.string().trim().email().transform((value) => value.toLowerCase()),
-});
 
 @Injectable()
 export class GuestAccessService {
@@ -87,22 +83,16 @@ export class GuestAccessService {
         timezone: invitation.event.timezone,
         accessState: this.accessWindow.state(invitation.event),
       },
-      requiresConfirmation: true,
+      requiresConfirmation: false,
     };
   }
 
   async exchange(body: unknown, ip: string | undefined, response: Response) {
     this.rateLimits.assert(`invitation-exchange:${ip ?? 'unknown'}`, 15, 15 * 60 * 1000);
-    const input = exchangeInvitationSchema.parse(body);
-    const invitation = await this.invitationForToken(input.token);
-    if (
-      !invitation?.guestId ||
-      !invitation.guest ||
-      invitation.guest.normalizedEmail !== input.email ||
-      !this.namesMatch(input.fullName, invitation.guest.fullName)
-    ) {
+    const { token } = invitationTokenSchema.parse(body);
+    const invitation = await this.invitationForToken(token);
+    if (!invitation?.guestId || !invitation.guest || invitation.guest.id !== invitation.guestId)
       throw this.invalidInvitation();
-    }
     this.accessWindow.assertActive(invitation.event);
     await this.createSession(invitation.guestId, invitation.event, response);
     await this.prisma.invitation.update({
@@ -223,7 +213,7 @@ export class GuestAccessService {
     const invitation = await this.prisma.invitation.findUnique({
       where: { tokenHash: this.tokens.hash(token) },
       include: {
-        guest: { select: { id: true, fullName: true, normalizedEmail: true } },
+        guest: { select: { id: true } },
         event: {
           select: {
             id: true,
@@ -241,7 +231,8 @@ export class GuestAccessService {
         },
       },
     });
-    if (!invitation?.guestId || !invitation.expiresAt) return null;
+    if (!invitation?.guestId || !invitation.expiresAt ||
+      !['SENT', 'ACCEPTED'].includes(invitation.status)) return null;
     if (preview) {
       if (invitation.status === 'REVOKED' || invitation.revokedAt) return null;
       if (

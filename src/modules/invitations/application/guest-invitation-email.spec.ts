@@ -33,6 +33,8 @@ describe('buildGuestInvitationEmail', () => {
     expect(text).toContain('Seat B12. Enter through the west door.');
     expect(text).toContain('09:00 (Europe/Lisbon)');
     expect(text).toContain('https://events.example.test/i/opaque-token');
+    expect(text).toContain('Open your personal link or scan the QR code');
+    expect(text).not.toContain('Confirm your name and email');
     expect(text).toContain('right away, until four hours after the event ends');
     expect(subject).toBe('Northstar Events: your invitation to Leadership Forum');
     expect(attachments?.map((attachment) => attachment.contentId)).toEqual([
