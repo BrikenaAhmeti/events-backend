@@ -27,6 +27,18 @@ describe('environment validation', () => {
     });
   });
 
+  it('keeps the API available when a cron secret is too short for scheduled jobs', () => {
+    expect(validateEnvironment({
+      NODE_ENV: 'production',
+      DATABASE_URL: 'postgresql://database.example/app',
+      SUPABASE_URL: 'https://project.supabase.co',
+      SUPABASE_SECRET_KEY: 'secret-key',
+      COOKIE_SECRET: 'a-production-cookie-secret-with-more-than-32-characters',
+      DATA_ENCRYPTION_KEY: 'a-production-data-encryption-key',
+      CRON_SECRET: 'openssl rand -hex 32',
+    }).CRON_SECRET).toBe('openssl rand -hex 32');
+  });
+
   it('parses provider-neutral SMTP settings without treating false as true', () => {
     expect(
       validateEnvironment({

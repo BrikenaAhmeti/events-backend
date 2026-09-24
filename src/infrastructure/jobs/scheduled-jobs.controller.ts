@@ -19,7 +19,7 @@ export class ScheduledJobsController {
     const secret = this.config.get('CRON_SECRET', { infer: true });
     const supplied = Buffer.from(authorization ?? '');
     const expected = Buffer.from(`Bearer ${secret}`);
-    if (!secret || supplied.length !== expected.length || !timingSafeEqual(supplied, expected))
+    if (secret.length < 32 || supplied.length !== expected.length || !timingSafeEqual(supplied, expected))
       throw new ApplicationError(401, 'JOB_AUTH_REQUIRED', 'Job authorization is required.');
     this.jobs.schedule();
     return { scheduled: true };

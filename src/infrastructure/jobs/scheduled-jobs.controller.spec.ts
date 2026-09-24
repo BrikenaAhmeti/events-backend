@@ -14,6 +14,9 @@ describe('ScheduledJobsController', () => {
     expect(schedule).not.toHaveBeenCalled();
     expect(controller.run(`Bearer ${secret}`)).toEqual({ scheduled: true });
     expect(schedule).toHaveBeenCalledOnce();
+    secret = 'openssl rand -hex 32';
+    expect(() => controller.run(`Bearer ${secret}`)).toThrow('Job authorization is required.');
+    expect(schedule).toHaveBeenCalledOnce();
     secret = '';
     expect(() => controller.run('Bearer ')).toThrow('Job authorization is required.');
     expect(schedule).toHaveBeenCalledOnce();
