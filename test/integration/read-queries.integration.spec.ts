@@ -3,6 +3,9 @@ import type { AuthenticatedActor } from '../../src/common/types/request.types';
 import type { PrismaService } from '../../src/infrastructure/database/prisma.service';
 import { DashboardService } from '../../src/modules/dashboard/application/dashboard.service';
 import { EventCompletenessService } from '../../src/modules/events/domain/event-completeness.service';
+import { EventLifecycleService } from '../../src/modules/events/domain/event-lifecycle.service';
+import { EventMutationPolicyService } from '../../src/modules/events/domain/event-mutation-policy.service';
+import { AuthorizationService } from '../../src/modules/memberships/application/authorization.service';
 
 // Opt-in, read-only checks against an existing database. No seed or schema changes.
 const databaseUrl = process.env.TEST_DATABASE_URL;
@@ -114,9 +117,12 @@ describe.skipIf(!databaseUrl)('Joined read queries', () => {
         ? [{ clientId: client.id, role: 'CLIENT_ADMIN', status: 'ACTIVE', permissions: [] }]
         : [],
     };
+    const lifecycle = new EventLifecycleService();
     const service = new DashboardService(
       prisma as unknown as PrismaService,
       new EventCompletenessService(),
+      lifecycle,
+      new EventMutationPolicyService(new AuthorizationService(), lifecycle),
     );
     const result = await service.get(actor);
     expect(result.metrics.clients).toBe(client ? 1 : 0);

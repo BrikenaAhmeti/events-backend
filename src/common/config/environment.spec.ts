@@ -12,6 +12,21 @@ describe('environment validation', () => {
     expect(() => validateEnvironment({ NODE_ENV: 'production' })).toThrow();
   });
 
+  it('keeps the API available when optional email, AI, and migration settings are absent', () => {
+    expect(validateEnvironment({
+      NODE_ENV: 'production',
+      DATABASE_URL: 'postgresql://database.example/app',
+      SUPABASE_URL: 'https://project.supabase.co',
+      SUPABASE_SECRET_KEY: 'secret-key',
+      COOKIE_SECRET: 'a-production-cookie-secret-with-more-than-32-characters',
+      DATA_ENCRYPTION_KEY: 'a-production-data-encryption-key',
+    })).toMatchObject({
+      DIRECT_DATABASE_URL: '',
+      OPENAI_API_KEY: '',
+      EMAIL_FROM: '',
+    });
+  });
+
   it('parses provider-neutral SMTP settings without treating false as true', () => {
     expect(
       validateEnvironment({
@@ -27,7 +42,7 @@ describe('environment validation', () => {
     });
   });
 
-  it('accepts SMTP instead of a Resend key when every production provider is configured', () => {
+  it('accepts a fully configured SMTP production environment', () => {
     expect(
       validateEnvironment({
         NODE_ENV: 'production',

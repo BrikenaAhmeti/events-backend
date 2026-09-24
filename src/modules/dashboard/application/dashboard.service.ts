@@ -3,6 +3,8 @@ import { Prisma } from '@prisma/client';
 import type { AuthenticatedActor } from '../../../common/types/request.types';
 import { PrismaService } from '../../../infrastructure/database/prisma.service';
 import { EventCompletenessService } from '../../events/domain/event-completeness.service';
+import { EventLifecycleService } from '../../events/domain/event-lifecycle.service';
+import { EventMutationPolicyService } from '../../events/domain/event-mutation-policy.service';
 import { Permission } from '../../memberships/domain/permission';
 
 type DashboardMetrics = {
@@ -19,6 +21,8 @@ export class DashboardService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly completeness: EventCompletenessService,
+    private readonly lifecycle: EventLifecycleService,
+    private readonly policy: EventMutationPolicyService,
   ) {}
 
   async get(actor: AuthenticatedActor) {
@@ -46,6 +50,7 @@ export class DashboardService {
         orderBy: { updatedAt: 'desc' },
         include: {
           client: { select: { id: true, name: true } },
+          createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
           _count: {
             select: { guests: true, documents: true, invitations: true },
           },
@@ -78,6 +83,18 @@ export class DashboardService {
       recentEvents: recentEvents.map((event) => ({
         ...event,
         completeness: this.completeness.evaluate(event),
+        operationalStatus: this.lifecycle.status(event, now),
+        capabilities: {
+          canEdit: this.policy.canMutate(actor, event, Permission.EVENT_EDIT),
+          canManageGuests: this.policy.canMutate(actor, event, Permission.GUEST_MANAGE),
+          canImportGuests: this.policy.canMutate(actor, event, Permission.GUEST_IMPORT),
+          canSendInvitations: this.policy.canMutate(actor, event, Permission.INVITATION_SEND),
+          canRevokeInvitations: this.policy.canMutate(actor, event, Permission.INVITATION_REVOKE),
+          canPublish: this.policy.canMutate(actor, event, Permission.EVENT_PUBLISH),
+          canUploadDocuments: this.policy.canMutate(actor, event, Permission.DOCUMENT_UPLOAD),
+          canDelete: this.policy.canMutate(actor, event, Permission.EVENT_DELETE),
+          canCancel: this.policy.canMutate(actor, event, Permission.EVENT_DELETE),
+        },
       })),
       recentActivity,
     };

@@ -17,7 +17,15 @@ const staff: AuthenticatedActor = {
       clientId: 'client-a',
       role: 'CLIENT_STAFF',
       status: 'ACTIVE',
-      permissions: [Permission.EVENT_READ, Permission.EVENT_EDIT, Permission.EVENT_DELETE],
+      permissions: [
+        Permission.EVENT_READ,
+        Permission.EVENT_EDIT,
+        Permission.EVENT_DELETE,
+        Permission.EVENT_PUBLISH,
+        Permission.GUEST_MANAGE,
+        Permission.INVITATION_SEND,
+        Permission.DOCUMENT_UPLOAD,
+      ],
     },
   ],
 };
@@ -62,9 +70,19 @@ describe('EventMutationPolicyService', () => {
   });
 
   it('denies staff changes to another creator event', () => {
-    expect(
-      service.canMutate(staff, { ...upcoming, createdByUserId: 'staff-b' }, Permission.EVENT_EDIT),
-    ).toBe(false);
+    const anotherCreatorEvent = { ...upcoming, createdByUserId: 'staff-b' };
+    for (const permission of [
+      Permission.EVENT_EDIT,
+      Permission.EVENT_DELETE,
+      Permission.EVENT_PUBLISH,
+      Permission.GUEST_MANAGE,
+      Permission.INVITATION_SEND,
+      Permission.DOCUMENT_UPLOAD,
+    ]) {
+      expect(service.canMutate(staff, anotherCreatorEvent, permission)).toBe(false);
+      expect(() => service.assertMutable(staff, anotherCreatorEvent, permission))
+        .toThrow('Staff can change only events they created.');
+    }
   });
 
   it('locks ongoing events for staff', () => {

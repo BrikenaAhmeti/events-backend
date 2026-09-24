@@ -44,12 +44,8 @@ export const environmentSchema = z
     if (environment.NODE_ENV !== 'production') return;
     const required = [
       'DATABASE_URL',
-      'DIRECT_DATABASE_URL',
       'SUPABASE_URL',
       'SUPABASE_SECRET_KEY',
-      'SUPABASE_STORAGE_BUCKET',
-      'OPENAI_API_KEY',
-      'EMAIL_FROM',
       'DATA_ENCRYPTION_KEY',
     ] as const;
     for (const field of required) {
@@ -59,22 +55,6 @@ export const environmentSchema = z
           path: [field],
           message: 'Required in production',
         });
-    }
-    if (environment.EMAIL_PROVIDER === 'resend' && !environment.RESEND_API_KEY)
-      context.addIssue({
-        code: 'custom',
-        path: ['RESEND_API_KEY'],
-        message: 'Required in production when EMAIL_PROVIDER=resend',
-      });
-    if (environment.EMAIL_PROVIDER === 'smtp') {
-      for (const field of ['SMTP_HOST', 'SMTP_USER', 'SMTP_PASSWORD'] as const) {
-        if (!environment[field])
-          context.addIssue({
-            code: 'custom',
-            path: [field],
-            message: 'Required in production when EMAIL_PROVIDER=smtp',
-          });
-      }
     }
     if (environment.COOKIE_SECRET === 'development-only-secret-change-me-now')
       context.addIssue({
