@@ -39,6 +39,11 @@ describe('GuestImportService', () => {
       ),
     );
     expect(preview.summary).toEqual({ total: 3, valid: 1, invalid: 1, duplicates: 1 });
+    expect(preview.rows).toEqual([
+      expect.objectContaining({ row: 2, data: expect.objectContaining({ email: 'avery@example.test' }), duplicate: false }),
+      expect.objectContaining({ row: 3, duplicate: true }),
+      expect.objectContaining({ row: 4, values: expect.objectContaining({ Email: 'invalid' }), errors: expect.any(Array) }),
+    ]);
   });
 
   it('parses a bounded XLSX guest list', async () => {

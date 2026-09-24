@@ -66,7 +66,7 @@ export function buildGuestInvitationEmail(input: GuestInvitationEmailInput): Ema
     ],
     action: { label: 'Open event invitation', url: input.invitationUrl },
     afterAction:
-      'Confirm your name and email in one message when you open your invitation. Guest access opens at the event start time and closes four hours after the event ends.',
+      'Confirm your name and email when you open your invitation. You can ask the guest concierge about your event right away, until four hours after the event ends.',
     notice:
       'This secure link is personal. Please do not forward it. If you were not expecting this invitation, contact the organizer or ignore this email.',
     reason: `Sent for ${input.companyName} through ${input.brand.productName}. You received this email because the organizer added you to the guest list for ${input.eventName}.`,

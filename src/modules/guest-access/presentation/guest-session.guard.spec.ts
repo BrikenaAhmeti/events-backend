@@ -6,6 +6,23 @@ import { GuestAccessWindowService } from '../application/guest-access-window.ser
 import { GuestSessionGuard } from './guest-session.guard';
 
 describe('GuestSessionGuard', () => {
+  it('allows the invited guest to chat before the event begins', async () => {
+    const now = new Date();
+    const update = vi.fn();
+    const guard = new GuestSessionGuard({ guestSession: {
+      findFirst: vi.fn().mockResolvedValue({
+        id: 'session-a', eventId: 'event-a', guestId: 'guest-a', revokedAt: null,
+        expiresAt: new Date(now.getTime() + 8 * 3_600_000),
+        event: { status: 'PUBLISHED', startAt: new Date(now.getTime() + 2 * 3_600_000), endAt: new Date(now.getTime() + 4 * 3_600_000) },
+      }), update,
+    } } as unknown as PrismaService, new TokenService(), new GuestAccessWindowService());
+    const request = { cookies: { [GUEST_SESSION_COOKIE]: 'opaque-session' }, params: { eventId: 'event-a' } };
+    const context = { switchToHttp: () => ({ getRequest: () => request }) } as ExecutionContext;
+    await expect(guard.canActivate(context)).resolves.toBe(true);
+    expect(update).toHaveBeenCalledOnce();
+    expect(request).toHaveProperty('guestActor', { sessionId: 'session-a', guestId: 'guest-a', eventId: 'event-a' });
+  });
+
   it('returns an ended state at the cutoff even when the session expires at the same instant', async () => {
     const now = new Date();
     const findFirst = vi.fn().mockResolvedValue({

@@ -394,6 +394,24 @@ describe('PublishEventHandler', () => {
     );
     expect(databaseTransaction.auditLog.create).toHaveBeenCalledOnce();
   });
+
+  it('can publish without queuing guest invitations', async () => {
+    const databaseTransaction = {
+      event: { update: vi.fn().mockResolvedValue({ ...readyEvent, status: 'PUBLISHED' }) },
+      guest: { findMany: vi.fn() },
+      auditLog: { create: vi.fn().mockResolvedValue({ id: 'audit-a' }) },
+    };
+    const prisma = {
+      event: { findUnique: vi.fn().mockResolvedValue(readyEvent) },
+      $transaction: vi.fn((work: (transaction: typeof databaseTransaction) => unknown) => work(databaseTransaction)),
+    } as unknown as PrismaService;
+    const outbox = { create: vi.fn().mockResolvedValue({ id: 'outbox-a' }), createMany: vi.fn() };
+    const handler = new PublishEventHandler(prisma, new EventCompletenessService(), outbox as unknown as OutboxService, policy, new GuestAccessWindowService());
+    await expect(handler.execute(new PublishEventCommand(actor, 'request-a', 'event-a', false)))
+      .resolves.toMatchObject({ status: 'PUBLISHED', invitationsQueued: 0 });
+    expect(databaseTransaction.guest.findMany).not.toHaveBeenCalled();
+    expect(outbox.createMany).not.toHaveBeenCalled();
+  });
 });
 
 describe('UpdateEventDetailsHandler', () => {

@@ -78,4 +78,42 @@ describe('InvitationsService', () => {
         expiresAt: new Date('2027-10-14T22:00:00Z'),
     });
   });
+
+  it('revokes an old sent link and queues a fresh invitation for one guest', async () => {
+    const event = {
+      id: 'event-a', clientId: 'client-a', slug: 'leadership-forum', status: 'PUBLISHED',
+      startAt: new Date('2027-10-12T08:00:00Z'), endAt: new Date('2027-10-14T18:00:00Z'),
+      createdByUserId: 'admin-a',
+    };
+    const transaction = {
+      $executeRaw: vi.fn(),
+      guest: { findFirst: vi.fn().mockResolvedValue({ id: 'guest-a' }), findMany: vi.fn().mockResolvedValue([{ id: 'guest-a' }]) },
+      invitation: { findFirst: vi.fn().mockResolvedValue(null), updateMany: vi.fn(), createMany: vi.fn() },
+      auditLog: { create: vi.fn() },
+    };
+    const prisma = {
+      event: { findUnique: vi.fn().mockResolvedValue(event) },
+      $transaction: vi.fn((work: (value: typeof transaction) => unknown) => work(transaction)),
+    } as unknown as PrismaService;
+    const outbox = { createMany: vi.fn() };
+    const service = new InvitationsService(prisma, new AuthorizationService(), outbox as unknown as OutboxService,
+      {} as QrCodeService, { get: vi.fn() } as unknown as ConfigService<Environment, true>,
+      new GuestAccessWindowService(), new EventMutationPolicyService(new AuthorizationService(), new EventLifecycleService()));
+    const actor: AuthenticatedActor = {
+      userId: 'admin-a', supabaseUserId: 'identity-a', email: 'admin@example.test',
+      firstName: 'Elena', lastName: 'Hart', platformRole: null,
+      memberships: [{ clientId: 'client-a', role: 'CLIENT_ADMIN', status: 'ACTIVE', permissions: [] }],
+    };
+    await expect(service.resendGuest(actor, 'request-a', 'event-a', 'guest-a')).resolves.toEqual({ queued: 1 });
+    expect(transaction.invitation.updateMany).toHaveBeenCalledWith({
+      where: { eventId: 'event-a', guestId: 'guest-a', status: 'SENT' },
+      data: expect.objectContaining({ status: 'REVOKED', tokenHash: null, tokenEncrypted: null }),
+    });
+    expect(transaction.guest.findMany).toHaveBeenCalledWith({
+      where: { eventId: 'event-a', id: { in: ['guest-a'] }, invitations: { none: { status: { in: ['QUEUED', 'SENT', 'ACCEPTED'] } } } },
+      select: { id: true },
+    });
+    expect(transaction.invitation.createMany).toHaveBeenCalledOnce();
+    expect(outbox.createMany).toHaveBeenCalledOnce();
+  });
 });

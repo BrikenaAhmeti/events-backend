@@ -28,7 +28,7 @@ describe('GuestAccessService invitation security', () => {
     const token = new TokenService().issue();
     const event = {
       id: 'event-a', slug: 'event-a', status: 'PUBLISHED',
-      startAt: new Date(Date.now() - 3_600_000), endAt: new Date(Date.now() + 3_600_000),
+      startAt: new Date(Date.now() + 3_600_000), endAt: new Date(Date.now() + 3 * 3_600_000),
     };
     const invitation = {
       id: 'invitation-a', tokenHash: token.hash, tokenEncrypted: null,
@@ -52,6 +52,8 @@ describe('GuestAccessService invitation security', () => {
       get: (key: string) => key === 'NODE_ENV' ? 'production' : key === 'COOKIE_SAME_SITE' ? 'lax' : '',
     } as unknown as ConfigService<Environment, true>, new GuestAccessWindowService());
     const identity = { token: token.raw, fullName: 'Avery Stone', email: 'AVERY@example.test' };
+    await expect(service.invitationPreview({ token: token.raw }, '127.0.0.1'))
+      .resolves.toMatchObject({ event: { accessState: 'ACTIVE' } });
     for (let attempt = 0; attempt < 2; attempt += 1) {
       await expect(service.exchange(identity, '127.0.0.1', { cookie } as unknown as Response))
         .resolves.toEqual({ eventId: event.id, eventSlug: event.slug });
@@ -68,10 +70,10 @@ describe('GuestAccessService invitation security', () => {
       expect.objectContaining({ httpOnly: true, secure: true, expires: invitation.expiresAt }));
   });
 
-  it.each(['NOT_STARTED', 'ENDED', 'CANCELLED'] as const)('denies both access paths when the event is %s', async (state) => {
+  it.each(['ENDED', 'CANCELLED'] as const)('denies both access paths when the event is %s', async (state) => {
     const event = {
       id: 'event-a', slug: 'event-a', status: state === 'CANCELLED' ? 'CANCELLED' : 'PUBLISHED',
-      startAt: new Date(Date.now() + (state === 'NOT_STARTED' ? 3_600_000 : -10 * 3_600_000)),
+      startAt: new Date(Date.now() - 10 * 3_600_000),
       endAt: new Date(Date.now() + (state === 'ENDED' ? -5 * 3_600_000 : 3_600_000)),
     };
     const guest = { id: 'guest-a', fullName: 'Avery Stone', normalizedEmail: 'avery@example.test' };
@@ -131,6 +133,27 @@ describe('GuestAccessService invitation security', () => {
     expect(query.select).not.toHaveProperty('parkingInformation');
     expect(query.select).not.toHaveProperty('wifiInformation');
     expect(query.select).not.toHaveProperty('organizerName');
+  });
+
+  it('lets a confirmed guest use the event link and open event details before the start', async () => {
+    const event = {
+      id: 'event-a', slug: 'leadership-forum', name: 'Leadership Forum', status: 'PUBLISHED',
+      startAt: new Date(Date.now() + 3_600_000), endAt: new Date(Date.now() + 3 * 3_600_000),
+      schedule: [],
+    };
+    const cookie = vi.fn();
+    const service = new GuestAccessService({
+      event: { findFirst: vi.fn().mockResolvedValue(event) },
+      guest: { findUnique: vi.fn().mockResolvedValue({ id: 'guest-a', fullName: 'Avery Stone' }) },
+      guestSession: { create: vi.fn() },
+    } as unknown as PrismaService, new TokenService(), new RateLimitService(), {
+      get: (key: string) => key === 'NODE_ENV' ? 'test' : '',
+    } as unknown as ConfigService<Environment, true>, new GuestAccessWindowService());
+    await expect(service.identify(event.slug, { fullName: 'Avery Stone', email: 'avery@example.test' }, '127.0.0.1', { cookie } as unknown as Response))
+      .resolves.toEqual({ eventId: event.id, eventSlug: event.slug });
+    await expect(service.guestEvent(event.id, 'guest-a'))
+      .resolves.toMatchObject({ id: event.id, accessClosesAt: new Date(event.endAt.getTime() + 4 * 3_600_000) });
+    expect(cookie).toHaveBeenCalledOnce();
   });
 
   it('denies expired invitations', async () => {
