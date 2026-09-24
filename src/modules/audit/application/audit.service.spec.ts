@@ -20,6 +20,40 @@ const clientAdministrator: AuthenticatedActor = {
 };
 
 describe('AuditService', () => {
+  it('labels super admin actors without returning their email address', async () => {
+    const findMany = vi.fn().mockResolvedValue([
+      { id: 'log-a', actor: { id: 'super-a', firstName: 'Mara', lastName: 'Ellis',
+        email: 'super.admin@example.test', platformRole: 'SUPER_ADMIN' } },
+      { id: 'log-b', actor: { id: 'staff-a', firstName: 'Jamie', lastName: 'Lee',
+        email: 'jamie@example.test', platformRole: null } },
+    ]);
+    const service = new AuditService({ auditLog: { findMany } } as unknown as PrismaService);
+
+    const result = await service.list(clientAdministrator, { limit: 30 });
+
+    expect(result.items[0]?.actor).toMatchObject({ platformRole: 'SUPER_ADMIN', email: null });
+    expect(result.items[1]?.actor).toMatchObject({ platformRole: null, email: 'jamie@example.test' });
+    expect(findMany.mock.calls[0]?.[0]).toMatchObject({
+      select: { actor: { select: { platformRole: true } } },
+    });
+  });
+
+  it('keeps super admins out of the team member directory and omits directory emails', async () => {
+    const findMany = vi.fn().mockResolvedValue([
+      { role: 'CLIENT_ADMIN', user: { id: 'super-a', firstName: 'Mara', lastName: 'Ellis', platformRole: 'SUPER_ADMIN' } },
+      { role: 'CLIENT_STAFF', user: { id: 'staff-a', firstName: 'Jamie', lastName: 'Lee', platformRole: null } },
+    ]);
+    const service = new AuditService({ clientMembership: { findMany } } as unknown as PrismaService);
+
+    const result = await service.actors(clientAdministrator);
+
+    expect(result).toEqual([{ id: 'staff-a', firstName: 'Jamie', lastName: 'Lee', role: 'CLIENT_STAFF' }]);
+    expect(findMany.mock.calls[0]?.[0]).toMatchObject({
+      where: { user: { platformRole: null } },
+      select: { user: { select: { platformRole: true } } },
+    });
+  });
+
   it('scopes activity to the client administrator and applies staff and time filters', async () => {
     const findMany = vi.fn().mockResolvedValue([]);
     const service = new AuditService({

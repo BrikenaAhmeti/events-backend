@@ -84,13 +84,21 @@ export class AuditService {
         metadata: true,
         createdAt: true,
         actor: {
-          select: { id: true, firstName: true, lastName: true, email: true },
+          select: { id: true, firstName: true, lastName: true, email: true, platformRole: true },
         },
         client: { select: { id: true, name: true } },
         event: { select: { id: true, name: true } },
       },
     });
-    const items = records.slice(0, input.limit);
+    const items = records.slice(0, input.limit).map((record) => ({
+      ...record,
+      actor: record.actor
+        ? {
+            ...record.actor,
+            email: record.actor.platformRole === 'SUPER_ADMIN' ? null : record.actor.email,
+          }
+        : null,
+    }));
     return {
       items,
       pageInfo: {
@@ -115,18 +123,23 @@ export class AuditService {
     const memberships = await this.prisma.clientMembership.findMany({
       where: {
         status: 'ACTIVE',
+        user: { platformRole: null },
         ...(clientIds ? { clientId: { in: clientIds } } : {}),
       },
       take: 1_000,
       select: {
         role: true,
         user: {
-          select: { id: true, firstName: true, lastName: true, email: true },
+          select: { id: true, firstName: true, lastName: true, platformRole: true },
         },
       },
     });
     return Array.from(
-      new Map(memberships.map(({ user, role }) => [user.id, { ...user, role }])).values(),
+      new Map(memberships
+        .filter(({ user }) => user.platformRole !== 'SUPER_ADMIN')
+        .map(({ user, role }) => [user.id, {
+          id: user.id, firstName: user.firstName, lastName: user.lastName, role,
+        }])).values(),
     ).sort((left, right) =>
       `${left.firstName} ${left.lastName}`.localeCompare(`${right.firstName} ${right.lastName}`),
     );
