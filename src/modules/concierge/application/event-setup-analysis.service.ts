@@ -44,6 +44,7 @@ const setupDraftSchema = z.object({
   schedule: z.array(scheduleItemSchema).max(200).default([]),
   guests: z.array(chatGuestSchema).max(500).default([]),
   suggestedName: z.string().max(160).default(''),
+  nameSuggestions: z.array(z.string().min(2).max(160)).max(3).default([]),
   nameWasProvided: z.boolean().default(false),
   nameSuggestionRejected: z.boolean().default(false),
   documentReviewPending: z.boolean().default(false),
@@ -137,7 +138,7 @@ export class EventSetupAnalysisService {
           },
         });
     const resumed = Boolean(session);
-    const welcome = `Let’s set up a new event for ${client.name}. First, tell me its purpose, event type, and name if you have one. You can also add the location, organizer, and guest names and email addresses, or attach a file. After the basics, I’ll show a separate date step with a calendar and time controls.`;
+    const welcome = `Let’s set up a new event for ${client.name}. First, tell me its purpose, event type, and name if you have one. If you do not have a name, describe the goal and I’ll suggest a few you can choose from or replace with your own. You can also add the location, organizer, and guest names and email addresses, or attach a file. After the basics, I’ll show a separate date step with a calendar and time controls.`;
     if (!session) {
       session = await this.prisma.conversation.create({
         data: {
@@ -253,6 +254,7 @@ export class EventSetupAnalysisService {
         event: { ...previous.event, name: previous.event.name ?? undefined },
         dateHints: previous.dateHints,
         suggestedName: previous.suggestedName,
+        nameSuggestions: previous.nameSuggestions,
         nameWasProvided: Boolean(previous.event.name),
         nameSuggestionRejected: previous.nameSuggestionRejected,
         completeness: this.completeness.evaluate(this.projectEvent(previous.event)),
@@ -374,8 +376,10 @@ export class EventSetupAnalysisService {
         'The setup chat supports up to 500 guests. Create the event workspace, then import the full guest list from Guests.',
       );
     }
-    const suggestedName =
-      event.name ?? this.suggestName(event, client.name);
+    const nameSuggestions = event.name ? [] : this.nameSuggestions(
+      extracted.nameSuggestions ?? [], event, previous, client.name,
+    );
+    const suggestedName = event.name ?? nameSuggestions[0] ?? '';
     const completeness = this.completeness.evaluate(this.projectEvent(event));
     const documentReviewPending = previous.documentReviewPending || Boolean(file);
     const draft: SetupDraft = {
@@ -385,6 +389,7 @@ export class EventSetupAnalysisService {
         endDate: extracted.event?.endDate ?? previous.dateHints.endDate,
       },
       suggestedName,
+      nameSuggestions,
       nameWasProvided: Boolean(event.name),
       nameSuggestionRejected: !event.name && previous.nameSuggestionRejected,
       facts,
@@ -404,7 +409,7 @@ export class EventSetupAnalysisService {
     };
     const message = (documentReviewPending
       ? this.buildDocumentReviewReply(draft, file?.originalname)
-      : this.buildReply(extracted.reply, completeness)) +
+      : this.buildReply(extracted.reply, completeness, nameSuggestions)) +
       (parsedGuests.missingEmails.length
         ? ` I still need email addresses before I can add these guests: ${parsedGuests.missingEmails.join(', ')}.`
         : '') +
@@ -432,6 +437,7 @@ export class EventSetupAnalysisService {
       event: { ...event, name: event.name ?? undefined },
       dateHints: draft.dateHints,
       suggestedName,
+      nameSuggestions,
       nameWasProvided: Boolean(event.name),
       nameSuggestionRejected: draft.nameSuggestionRejected,
       completeness,
@@ -452,6 +458,7 @@ export class EventSetupAnalysisService {
       : {
           event: {}, dateHints: { startDate: '', endDate: '' },
           facts: [], schedule: [], guests: [], suggestedName: '',
+          nameSuggestions: [],
           nameWasProvided: false, nameSuggestionRejected: false, documentReviewPending: false,
           documentReviewBaseline: null, pendingDocumentNames: [],
         };
@@ -471,6 +478,7 @@ export class EventSetupAnalysisService {
       event: { ...previous.event, name },
       nameWasProvided: Boolean(name),
       nameSuggestionRejected: rejected,
+      nameSuggestions: rejected ? [] : previous.nameSuggestions,
     };
     const completeness = this.completeness.evaluate(this.projectEvent(draft.event));
     const message = rejected
@@ -495,6 +503,7 @@ export class EventSetupAnalysisService {
     return {
       sessionId, message, messages, event: draft.event, dateHints: draft.dateHints,
       suggestedName: draft.suggestedName, nameWasProvided: draft.nameWasProvided,
+      nameSuggestions: draft.nameSuggestions,
       nameSuggestionRejected: draft.nameSuggestionRejected,
       completeness, facts: draft.facts, schedule: draft.schedule, guests: draft.guests,
       extractedFacts: draft.facts.length, extractedScheduleItems: draft.schedule.length,
@@ -521,6 +530,7 @@ export class EventSetupAnalysisService {
       ...previous,
       ...(confirmed || !baseline ? {} : baseline),
       suggestedName: !confirmed && baseline ? baseline.event.name ?? '' : previous.suggestedName,
+      nameSuggestions: !confirmed && baseline ? [] : previous.nameSuggestions,
       nameWasProvided: !confirmed && baseline ? Boolean(baseline.event.name) : previous.nameWasProvided,
       documentReviewPending: false,
       documentReviewBaseline: null,
@@ -546,6 +556,7 @@ export class EventSetupAnalysisService {
     return {
       sessionId, message, messages, event: draft.event, dateHints: draft.dateHints,
       suggestedName: draft.suggestedName,
+      nameSuggestions: draft.nameSuggestions,
       nameWasProvided: Boolean(draft.event.name),
       nameSuggestionRejected: draft.nameSuggestionRejected,
       completeness, facts: draft.facts, schedule: draft.schedule, guests: draft.guests,
@@ -611,22 +622,24 @@ export class EventSetupAnalysisService {
     };
   }
 
-  private buildReply(reply: string | undefined, completeness: EventCompleteness): string {
+  private buildReply(reply: string | undefined, completeness: EventCompleteness, nameSuggestions: string[] = []): string {
     const acknowledgement = (reply ?? '')
       .split(/(?<=[.!?])\s+/)
       .filter((sentence) => !sentence.includes('?'))
       .join(' ')
       .trim();
     if (completeness.ready) {
-      return `${acknowledgement || 'I captured the event details.'} Everything required is ready. Would you like to attach more event documents or add any guest details, such as names, emails, seating, dietary or accessibility needs, travel, or accommodation? You can also add venue directions, rooms, restrooms, parking, and Wi-Fi. If there is nothing else to add, create the event workspace to continue.`;
+      return `${acknowledgement || 'I captured the event details.'} Please review the event name, type, purpose, dates, location, and organizer in the summary below. Tell me anything to change, or confirm the details to create the event workspace.`;
     }
     const missing = new Set(completeness.missing);
     let question: string;
-    if (missing.has('description') || missing.has('category')) {
+    if (missing.has('name') && nameSuggestions.length) {
+      question = 'Here are some names based on the event goal. Choose one below or write your own. You can also tell me what to change about the suggestions.';
+    } else if (missing.has('description') || missing.has('category')) {
       const basics = ['description', 'category'].filter((field) => missing.has(field)).map((field) => missingLabels[field]);
       question = `Tell me ${basics.join(' and ')} in one message.${missing.has('name') ? ' You can choose the suggested event name below or provide your own.' : ''}`;
     } else if (missing.has('name')) {
-      question = 'Choose the suggested event name below, or reject it to enter your own name.';
+      question = 'Tell me the event goal so I can suggest a few names, or write your own name below.';
     } else if (
       ['startAt', 'endAt', 'timezone'].some((field) => missing.has(field)) ||
       completeness.warnings.some((warning) =>
@@ -747,5 +760,18 @@ export class EventSetupAnalysisService {
         ? ` ${new Date(event.startAt).getUTCFullYear()}`
         : '';
     return `${place} ${category}${year}`.slice(0, 160);
+  }
+
+  private nameSuggestions(
+    proposed: string[], event: SetupDraft['event'], previous: SetupDraft, clientName: string,
+  ): string[] {
+    const names = proposed.map((name) => name.trim()).filter((name) => name.length >= 2 && name.length <= 160);
+    if (!names.length && !previous.nameSuggestionRejected) names.push(...previous.nameSuggestions);
+    if (!names.length && (event.description || event.category)) {
+      const base = this.suggestName(event, clientName);
+      const category = categoryLabels[event.category ?? 'OTHER'] ?? 'Special Event';
+      names.push(base, `${category}: A Shared Purpose`, `Together for ${category}`);
+    }
+    return [...new Set(names)].slice(0, 3);
   }
 }

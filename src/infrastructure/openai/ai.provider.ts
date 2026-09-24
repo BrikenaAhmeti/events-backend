@@ -1,5 +1,6 @@
 export type EventExtractionCandidate = {
   reply?: string;
+  nameSuggestions?: string[];
   event?: {
     name?: string;
     category?: string;
