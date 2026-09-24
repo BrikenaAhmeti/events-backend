@@ -10,10 +10,12 @@ import { AiProvider } from '../../../infrastructure/openai/ai.provider';
 import { EventKnowledgeRepository } from '../../knowledge/infrastructure/event-knowledge.repository';
 import { AuthorizationService } from '../../memberships/application/authorization.service';
 import { Permission } from '../../memberships/domain/permission';
+import { languageName, requestedLanguage } from './guest-chat-language';
 
 const answerSchema = z.string().trim().min(1).max(4_000);
 
 export type ConciergeStreamEvent =
+  | { type: 'language'; language: string }
   | { type: 'status'; messageId: string; status: 'PROCESSING' }
   | { type: 'delta'; messageId: string; delta: string }
   | {
@@ -133,7 +135,47 @@ export class ConciergeService {
   }
 
   async historyGuest(actor: GuestActor) {
-    return this.history(actor.eventId, 'GUEST', undefined, actor.guestId);
+    const conversation = await this.prisma.conversation.findFirst({
+      where: { eventId: actor.eventId, type: 'GUEST', state: 'ACTIVE', userId: null, guestId: actor.guestId },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        draft: true,
+        messages: {
+          orderBy: { createdAt: 'desc' }, take: 100,
+          select: { id: true, role: true, content: true, status: true, createdAt: true },
+        },
+      },
+    });
+    if (!conversation) return { id: null, language: null, messages: [] };
+    const draft = conversation.draft as { language?: string } | null;
+    return {
+      id: conversation.id,
+      language: languageName(draft?.language) ? draft?.language : null,
+      messages: [...conversation.messages].reverse(),
+    };
+  }
+
+  async startGuestChat(actor: GuestActor, language: string) {
+    if (!languageName(language))
+      throw new ApplicationError(400, 'INVALID_CHAT_LANGUAGE', 'Choose a valid chat language.');
+    const event = await this.loadEvent(actor.eventId, true);
+    const guest = await this.prisma.guest.findFirst({
+      where: { id: actor.guestId, eventId: event.id }, select: { id: true },
+    });
+    if (!guest)
+      throw new ApplicationError(403, 'GUEST_ACCESS_DENIED', 'Guest access is not valid.');
+    return this.prisma.$transaction(async (tx) => {
+      await tx.conversation.updateMany({
+        where: { eventId: event.id, type: 'GUEST', state: 'ACTIVE', userId: null, guestId: guest.id },
+        data: { state: 'COMPLETED', completedAt: new Date() },
+      });
+      const conversation = await tx.conversation.create({
+        data: { clientId: event.clientId, eventId: event.id, guestId: guest.id, type: 'GUEST', draft: { language } },
+        select: { id: true },
+      });
+      return { id: conversation.id, language, messages: [] };
+    });
   }
 
   private async answer(input: {
@@ -154,6 +196,18 @@ export class ConciergeService {
       input.userId,
       input.guestId,
     );
+    const draft = conversation.draft as { language?: string } | null;
+    let responseLanguage = input.type === 'GUEST' ? draft?.language ?? 'en' : undefined;
+    if (input.type === 'GUEST') {
+      const changedTo = requestedLanguage(input.question);
+      if (changedTo && changedTo !== responseLanguage) {
+        responseLanguage = changedTo;
+        await this.prisma.conversation.update({
+          where: { id: conversation.id }, data: { draft: { ...(draft ?? {}), language: changedTo } },
+        });
+        this.publish(input, { type: 'language', language: changedTo });
+      }
+    }
     const recentMessages = [...(conversation.messages ?? [])].reverse()
       .filter((message) => !this.mentionsOtherGuest(message.content, input.otherGuestIdentifiers))
       .map((message) => ({
@@ -198,6 +252,7 @@ export class ConciergeService {
           privateGuestContext: input.privateContext,
           recentMessages,
           requestId: input.requestId,
+          responseLanguage: languageName(responseLanguage) ?? undefined,
         };
       const response = input.audience === 'GUEST'
         ? await this.ai.answer(context)
@@ -374,11 +429,40 @@ export class ConciergeService {
     onEvent?: (event: ConciergeStreamEvent) => void,
   ) {
     const conversation = await this.conversation(event, 'GUEST', undefined, guestId);
+    const draft = conversation.draft as { language?: string } | null;
+    const changedTo = requestedLanguage(question);
+    const language = changedTo ?? draft?.language ?? 'en';
+    if (changedTo && changedTo !== draft?.language) {
+      await this.prisma.conversation.update({
+        where: { id: conversation.id }, data: { draft: { ...(draft ?? {}), language: changedTo } },
+      });
+      onEvent?.({ type: 'language', language: changedTo });
+    }
+    let localizedReply = reply;
+    if (language !== 'en') {
+      try {
+        const translated = await this.ai.answer({
+          audience: 'GUEST',
+          question: 'A guest asked for another attendee’s private details. Politely say that you can help with their own arrangements and shared event details, but cannot share another guest’s information. Do not mention any attendee by name.',
+          eventName: event.name,
+          timezone: event.timezone ?? 'UTC',
+          structuredContext: `Event: ${event.name}`,
+          untrustedDocumentContext: '',
+          recentMessages: [],
+          responseLanguage: languageName(language) ?? 'English',
+          requestId: randomUUID(),
+        });
+        if (answerSchema.safeParse(translated.answer).success)
+          localizedReply = translated.answer;
+      } catch {
+        // Keep the privacy refusal available even if translation is unavailable.
+      }
+    }
     await this.prisma.conversationMessage.create({
       data: { conversationId: conversation.id, role: 'USER', content: question, status: 'COMPLETE' },
     });
     const message = await this.prisma.conversationMessage.create({
-      data: { conversationId: conversation.id, role: 'CONCIERGE', content: reply, status: 'COMPLETE' },
+      data: { conversationId: conversation.id, role: 'CONCIERGE', content: localizedReply, status: 'COMPLETE' },
     });
     onEvent?.({
       type: 'message',

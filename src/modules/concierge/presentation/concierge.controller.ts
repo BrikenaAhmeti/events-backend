@@ -26,6 +26,7 @@ import { OrganizerExtractionService } from '../application/organizer-extraction.
 import { EventSetupAnalysisService } from '../application/event-setup-analysis.service';
 
 const questionSchema = z.object({ message: z.string().trim().min(1).max(4_000) });
+const languageSchema = z.object({ language: z.string().trim().min(2).max(32) });
 const sourceSchema = z.object({ text: z.string().trim().min(1).max(80_000) });
 
 @ApiTags('Concierge')
@@ -107,6 +108,21 @@ export class ConciergeController {
       sourceSchema.parse(body).text,
       requestId,
     );
+  }
+
+  @Public()
+  @UseGuards(GuestSessionGuard)
+  @Post('guest/events/:eventId/concierge/chats')
+  startGuestChat(
+    @Req() request: RequestContext,
+    @Param('eventId') eventId: string,
+    @Body() body: unknown,
+  ) {
+    const actor = request.guestActor;
+    if (!actor || actor.eventId !== eventId)
+      throw new ApplicationError(403, 'GUEST_ACCESS_DENIED', 'Guest access is not valid.');
+    this.rateLimits.assert(`concierge:guest-new-chat:${actor.sessionId}:${eventId}`, 15, 60_000);
+    return this.concierge.startGuestChat(actor, languageSchema.parse(body).language);
   }
 
   @Public()

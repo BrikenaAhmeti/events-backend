@@ -42,6 +42,7 @@ export type GroundedAnswerInput = {
   privateGuestContext?: string;
   recentMessages?: Array<{ role: 'user' | 'assistant'; content: string }>;
   requestId: string;
+  responseLanguage?: string;
 };
 
 export abstract class AiProvider {

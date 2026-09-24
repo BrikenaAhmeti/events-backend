@@ -5,8 +5,81 @@ import type { EventKnowledgeRepository } from '../../knowledge/infrastructure/ev
 import { AuthorizationService } from '../../memberships/application/authorization.service';
 import type { FieldEncryptionService } from '../../../common/security/field-encryption.service';
 import { ConciergeService, type ConciergeStreamEvent } from './concierge.service';
+import { requestedLanguage } from './guest-chat-language';
 
 describe('ConciergeService streaming', () => {
+  it('archives a guest’s old chat and starts a saved empty chat in the chosen language', async () => {
+    const actor: GuestActor = { eventId: 'event-a', guestId: 'guest-a', sessionId: 'session-a' };
+    const updateMany = vi.fn().mockResolvedValue({ count: 1 });
+    const create = vi.fn().mockResolvedValue({ id: 'new-chat' });
+    const prisma = {
+      event: { findUnique: vi.fn().mockResolvedValue({ id: actor.eventId, clientId: 'client-a' }) },
+      guest: { findFirst: vi.fn().mockResolvedValue({ id: actor.guestId }) },
+      $transaction: vi.fn(async (operation: (tx: unknown) => Promise<unknown>) =>
+        operation({ conversation: { updateMany, create } })),
+    } as unknown as PrismaService;
+    const service = new ConciergeService(prisma, {} as AiProvider, {} as EventKnowledgeRepository,
+      new AuthorizationService(), {} as FieldEncryptionService);
+
+    expect(await service.startGuestChat(actor, 'sq')).toEqual({ id: 'new-chat', language: 'sq', messages: [] });
+    expect(updateMany.mock.calls[0]?.[0]).toMatchObject({
+      where: { eventId: actor.eventId, type: 'GUEST', state: 'ACTIVE', userId: null, guestId: actor.guestId },
+      data: { state: 'COMPLETED' },
+    });
+    expect(create.mock.calls[0]?.[0]).toMatchObject({
+      data: { guestId: actor.guestId, draft: { language: 'sq' } },
+    });
+  });
+
+  it('recognizes explicit language changes without mistaking an event question for one', () => {
+    expect(requestedLanguage('Please continue in Albanian.')).toBe('sq');
+    expect(requestedLanguage('Can you reply in French?')).toBe('fr');
+    expect(requestedLanguage('Fol shqip, ju lutem.')).toBe('sq');
+    expect(requestedLanguage('Speak Albanian, please.')).toBe('sq');
+    expect(requestedLanguage('Përgjigju në shqip.')).toBe('sq');
+    expect(requestedLanguage('What language is the French presentation in?')).toBeNull();
+  });
+
+  it('saves a guest’s in-chat language switch for later answers', async () => {
+    const actor: GuestActor = { eventId: 'event-a', guestId: 'guest-a', sessionId: 'session-a' };
+    let language = 'en';
+    const event = {
+      id: actor.eventId, clientId: 'client-a', name: 'Forum', timezone: 'Europe/Paris',
+      description: null, destination: null, venue: null, venueAddress: null, venueDetails: null,
+      restroomInformation: null, accessibilityInformation: null, parkingInformation: null,
+      wifiInformation: null, organizerName: null, organizerEmail: null,
+      startAt: null, endAt: null, schedule: [], facts: [], contacts: [], locations: [],
+    };
+    const update = vi.fn().mockImplementation(({ data }: { data: { draft: { language: string } } }) => {
+      language = data.draft.language;
+      return Promise.resolve();
+    });
+    const prisma = {
+      event: { findUnique: vi.fn().mockResolvedValue(event) },
+      guest: { findFirst: vi.fn().mockResolvedValue({ id: actor.guestId }), findMany: vi.fn().mockResolvedValue([]) },
+      conversation: {
+        findFirst: vi.fn().mockImplementation(() => Promise.resolve({ id: 'chat-a', draft: { language }, messages: [] })),
+        update,
+      },
+      conversationMessage: { create: vi.fn().mockImplementation(({ data }: { data: Record<string, unknown> }) =>
+        Promise.resolve({ ...data, id: data.id ?? 'message-a', createdAt: new Date() })) },
+    } as unknown as PrismaService;
+    const answer = vi.fn().mockResolvedValue({ answer: 'Bonjour.' });
+    const service = new ConciergeService(prisma,
+      { embed: vi.fn().mockResolvedValue([]), answer } as unknown as AiProvider,
+      { semanticSearch: vi.fn() } as unknown as EventKnowledgeRepository,
+      new AuthorizationService(), {} as FieldEncryptionService);
+    const events: ConciergeStreamEvent[] = [];
+
+    await service.askGuest(actor, 'Please continue in French.', 'request-a', (item) => events.push(item));
+    await service.askGuest(actor, 'Where is the venue?', 'request-b');
+
+    expect(update).toHaveBeenCalledWith({ where: { id: 'chat-a' }, data: { draft: { language: 'fr' } } });
+    expect(events[0]).toEqual({ type: 'language', language: 'fr' });
+    expect(answer.mock.calls[0]?.[0]).toMatchObject({ responseLanguage: 'French' });
+    expect(answer.mock.calls[1]?.[0]).toMatchObject({ responseLanguage: 'French' });
+  });
+
   it('loads the latest guest messages in chronological order within the authenticated event and guest', async () => {
     const findFirst = vi.fn().mockResolvedValue({ id: 'conversation-a', messages: [
       { id: 'latest', content: 'The east entrance.', createdAt: new Date('2027-10-12T09:01:00Z') },
@@ -183,6 +256,30 @@ describe('ConciergeService streaming', () => {
     const nearby = await service.askGuest(actor, 'Who is next to me?', 'request-nearby');
     expect(nearby.message.content).toContain('cannot share another guest');
     expect(answer).not.toHaveBeenCalled();
+  });
+
+  it('localizes a privacy refusal without exposing the other guest to the language model', async () => {
+    const actor: GuestActor = { eventId: 'event-a', guestId: 'guest-a', sessionId: 'session-a' };
+    const prisma = {
+      event: { findUnique: vi.fn().mockResolvedValue({ id: actor.eventId, clientId: 'client-a', name: 'Forum', timezone: 'Europe/Paris' }) },
+      guest: {
+        findFirst: vi.fn().mockResolvedValue({ id: actor.guestId }),
+        findMany: vi.fn().mockResolvedValue([{ fullName: 'Alex Morgan', email: 'alex@example.test' }]),
+      },
+      conversation: { findFirst: vi.fn().mockResolvedValue({ id: 'chat-a', draft: { language: 'fr' } }) },
+      conversationMessage: { create: vi.fn().mockImplementation(({ data }: { data: Record<string, unknown> }) =>
+        Promise.resolve({ ...data, id: 'message-a', createdAt: new Date() })) },
+    } as unknown as PrismaService;
+    const answer = vi.fn().mockResolvedValue({ answer: 'Je peux vous aider avec vos informations, mais pas celles des autres invités.' });
+    const service = new ConciergeService(prisma, { answer } as unknown as AiProvider,
+      {} as EventKnowledgeRepository, new AuthorizationService(), {} as FieldEncryptionService);
+
+    const result = await service.askGuest(actor, 'Where is Alex Morgan sitting?', 'request-a');
+
+    expect(result.message.content).toContain('autres invités');
+    expect(answer.mock.calls[0]?.[0]).toMatchObject({ responseLanguage: 'French', recentMessages: [], untrustedDocumentContext: '' });
+    expect(JSON.stringify(answer.mock.calls[0]?.[0])).not.toContain('Alex Morgan');
+    expect(JSON.stringify(answer.mock.calls[0]?.[0])).not.toContain('alex@example.test');
   });
 
   it('uses only the current guest’s private note and excludes other guest document content', async () => {
