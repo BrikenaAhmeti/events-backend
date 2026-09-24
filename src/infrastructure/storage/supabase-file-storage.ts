@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import type { Environment } from '../../common/config/environment';
@@ -7,6 +7,7 @@ import { FileStorage, type StoredFile } from './file-storage';
 
 @Injectable()
 export class SupabaseFileStorage extends FileStorage {
+  private readonly logger = new Logger(SupabaseFileStorage.name);
   private supabase?: SupabaseClient;
 
   constructor(private readonly config: ConfigService<Environment, true>) {
@@ -20,6 +21,13 @@ export class SupabaseFileStorage extends FileStorage {
       upsert: false,
     });
     if (error) {
+      this.logger.error({
+        operation: 'upload',
+        bucket,
+        providerStatus: error.statusCode,
+        providerError: error.name,
+        providerMessage: error.message,
+      }, 'Supabase Storage upload failed');
       throw new ApplicationError(502, 'FILE_UPLOAD_FAILED', 'The file could not be uploaded.');
     }
     return { objectKey, bucket };

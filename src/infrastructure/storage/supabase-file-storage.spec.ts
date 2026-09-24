@@ -1,4 +1,5 @@
 import type { ConfigService } from '@nestjs/config';
+import { Logger } from '@nestjs/common';
 import { createClient } from '@supabase/supabase-js';
 import type { Environment } from '../../common/config/environment';
 import { SupabaseFileStorage } from './supabase-file-storage';
@@ -54,6 +55,25 @@ describe('SupabaseFileStorage', () => {
       contentType: 'application/pdf',
       upsert: false,
     });
+  });
+
+  it('records the provider reason when an upload fails without exposing it to the caller', async () => {
+    const logError = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    files.upload.mockResolvedValue({
+      data: null,
+      error: { statusCode: '404', name: 'StorageApiError', message: 'Bucket not found' },
+    });
+    const storage = new SupabaseFileStorage(config());
+
+    await expect(storage.upload('documents/document.pdf', Buffer.from('file'), 'application/pdf'))
+      .rejects.toMatchObject({ statusCode: 502, code: 'FILE_UPLOAD_FAILED' });
+    expect(logError).toHaveBeenCalledWith({
+      operation: 'upload',
+      bucket: 'events-files',
+      providerStatus: '404',
+      providerError: 'StorageApiError',
+      providerMessage: 'Bucket not found',
+    }, 'Supabase Storage upload failed');
   });
 
   it('downloads private file content and deletes the exact object key', async () => {
