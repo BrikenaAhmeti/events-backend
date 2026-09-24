@@ -249,6 +249,37 @@ describe('OpenAiProvider event setup', () => {
     expect(result.event?.endAt).toBe('2026-09-23T16:00:00.000Z');
   });
 
+  it('passes a PDF as a file input for visually structured or scanned event briefs', async () => {
+    openAi.create.mockResolvedValueOnce({
+      output_text: JSON.stringify({
+        reply: 'I found the schedule and organizer.',
+        event: { startDate: '2027-10-14', endDate: '2027-10-14',
+          startTime: '09:30', endTime: '17:15',
+          organizerName: 'Arta Krasniqi', organizerEmail: 'arta@example.test' },
+        facts: [], schedule: [], guests: [],
+      }),
+    });
+    const config = {
+      get: (key: string) => ({ OPENAI_API_KEY: 'test-key', OPENAI_MODEL: 'test-model' })[key],
+    } as unknown as ConfigService<Environment, true>;
+    const provider = new OpenAiProvider(config);
+    const result = await provider.extractEventInformation(
+      'Attached event file: brief.pdf', 'request-pdf', ['startTime', 'organizerEmail'],
+      { filename: 'brief.pdf', mimeType: 'application/pdf', content: Buffer.from('%PDF-test') },
+    );
+    expect(result.event?.startTime).toBe('09:30');
+    expect(result.event?.organizerEmail).toBe('arta@example.test');
+    const request = openAi.create.mock.calls.at(-1)?.[0] as unknown as {
+      input: Array<{ role: string; content: string | Array<Record<string, string>> }>;
+    };
+    expect(request.input.some((item) => item.role === 'developer' &&
+      typeof item.content === 'string' && item.content.includes('organizerEmail'))).toBe(true);
+    expect(request.input.at(-1)?.content).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'input_file', filename: 'brief.pdf',
+        file_data: expect.stringContaining('data:application/pdf;base64,') as unknown }),
+    ]));
+  });
+
   it('reports malformed model output as an extraction failure rather than bad user input', async () => {
     openAi.create.mockResolvedValueOnce({ output_text: '{invalid-json' });
     const config = {

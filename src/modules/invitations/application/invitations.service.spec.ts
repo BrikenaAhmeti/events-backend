@@ -107,7 +107,7 @@ describe('InvitationsService', () => {
     await expect(service.resendGuest(actor, 'request-a', 'event-a', 'guest-a')).resolves.toEqual({ queued: 1 });
     expect(transaction.invitation.updateMany).toHaveBeenCalledWith({
       where: { eventId: 'event-a', guestId: 'guest-a', status: 'SENT' },
-      data: expect.objectContaining({ status: 'REVOKED', tokenHash: null, tokenEncrypted: null }),
+      data: expect.objectContaining({ status: 'REVOKED', tokenHash: null, tokenEncrypted: null }) as unknown,
     });
     expect(transaction.guest.findMany).toHaveBeenCalledWith({
       where: { eventId: 'event-a', id: { in: ['guest-a'] }, invitations: { none: { status: { in: ['QUEUED', 'SENT', 'ACCEPTED'] } } } },

@@ -25,6 +25,7 @@ describe('SupabaseFileStorage', () => {
     remove: vi.fn(),
     exists: vi.fn(),
     createSignedUrl: vi.fn(),
+    createSignedUploadUrl: vi.fn(),
   };
   const from = vi.fn(() => files);
   const createClientMock = vi.mocked(createClient);
@@ -106,6 +107,16 @@ describe('SupabaseFileStorage', () => {
     expect(files.createSignedUrl).toHaveBeenCalledWith('documents/document.pdf', 900, {
       download: true,
     });
+  });
+
+  it('creates a signed upload URL for the private bucket', async () => {
+    files.createSignedUploadUrl.mockResolvedValue({
+      data: { signedUrl: 'https://project.supabase.co/signed/upload' }, error: null,
+    });
+    const storage = new SupabaseFileStorage(config());
+    await expect(storage.createSignedUploadUrl('pending/brief.pdf'))
+      .resolves.toBe('https://project.supabase.co/signed/upload');
+    expect(files.createSignedUploadUrl).toHaveBeenCalledWith('pending/brief.pdf');
   });
 
   it('fails closed when the backend-only Supabase secret is missing', async () => {

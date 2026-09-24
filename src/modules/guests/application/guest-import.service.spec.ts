@@ -60,6 +60,13 @@ describe('GuestImportService', () => {
     });
   });
 
+  it('asks for smaller batches when a preview would exceed the function response budget', async () => {
+    const rows = Array.from({ length: 550 }, (_, index) =>
+      `Guest ${index},guest${index}@example.test,${'a'.repeat(4_000)}`);
+    await expect(service.preview(csv(`Name,Email,Notes\n${rows.join('\n')}`)))
+      .rejects.toMatchObject({ code: 'IMPORT_PREVIEW_TOO_LARGE' });
+  });
+
   it('parses a bounded XLSX guest list', async () => {
     const workbook = new ExcelJS.Workbook();
     workbook.addWorksheet('Guests').addRows([
