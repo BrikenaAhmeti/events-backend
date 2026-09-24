@@ -137,8 +137,8 @@ export class EventSetupAnalysisService {
           },
         });
     const resumed = Boolean(session);
+    const welcome = `Let’s set up a new event for ${client.name}. First, tell me its purpose, event type, and name if you have one. You can also add the location, organizer, and guest names and email addresses, or attach a file. After the basics, I’ll show a separate date step with a calendar and time controls.`;
     if (!session) {
-      const welcome = `Let’s set up a new event for ${client.name}. Tell me what you know about its purpose, dates, location, and organizer. You can add guest names and email addresses here too. Send everything in one message or several, or attach a file. I’ll ask for any required details that are missing.`;
       session = await this.prisma.conversation.create({
         data: {
           clientId: client.id,
@@ -162,10 +162,12 @@ export class EventSetupAnalysisService {
       clientId: client.id,
       clientName: client.name,
       resumed,
-      messages: session.messages.map((message) => ({
+      messages: session.messages.map((message, index) => ({
         id: message.id,
         role: message.role,
-        content: message.content,
+        content: index === 0 && message.role === 'CONCIERGE' &&
+          message.content.startsWith(`Let’s set up a new event for ${client.name}. Tell me what you know about its purpose, dates, location, and organizer.`)
+          ? welcome : message.content,
         metadata: message.metadata,
         createdAt: message.createdAt,
       })),
@@ -631,7 +633,7 @@ export class EventSetupAnalysisService {
         ['endBeforeStart', 'invalidTimezone'].includes(warning),
       )
     ) {
-      question = 'What are the start and end dates and times, and which timezone should I use? You can write them together in the chat.';
+      question = 'Next, choose one date or a date range, the start and end times, and the event timezone in the date step below.';
     } else if (missing.has('location')) {
       question =
         'Send the destination or city, venue, and venue address in one message, separated by commas. Add “not decided” for anything you do not know yet.';

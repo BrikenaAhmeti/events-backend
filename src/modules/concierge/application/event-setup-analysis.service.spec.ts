@@ -69,7 +69,7 @@ describe('EventSetupAnalysisService', () => {
           id: 'welcome-a',
           role: 'CONCIERGE',
           content:
-            'Let’s set up a new event for Northstar Events. Tell me what you know about its purpose, dates, location, and organizer. You can add guest names and email addresses here too.',
+            'Let’s set up a new event for Northstar Events. First, tell me its purpose, event type, and name if you have one. You can also add the location, organizer, and guest names and email addresses, or attach a file. After the basics, I’ll show a separate date step with a calendar and time controls.',
           metadata: {},
           createdAt: new Date('2027-01-01T10:00:00Z'),
         },
@@ -93,11 +93,41 @@ describe('EventSetupAnalysisService', () => {
     expect(result.sessionId).toBe(sessionId);
     expect(result.resumed).toBe(false);
     expect(result.messages[0]?.content).toContain('guest names and email addresses');
+    expect(result.messages[0]?.content).toContain('separate date step with a calendar');
     const createInput = createConversation.mock.calls[0]?.[0] as unknown as {
-      data: { type: string; userId: string };
+      data: { type: string; userId: string; messages: { create: { content: string } } };
     };
     expect(createInput.data.type).toBe('EVENT_SETUP');
     expect(createInput.data.userId).toBe(actor.userId);
+    expect(createInput.data.messages.create.content).toContain('separate date step with a calendar');
+  });
+
+  it('shows the separate date step when reopening a chat with the old welcome', async () => {
+    const oldWelcome = 'Let’s set up a new event for Northstar Events. Tell me what you know about its purpose, dates, location, and organizer. You can add guest names and email addresses here too. Send everything in one message or several, or attach a file. I’ll ask for any required details that are missing.';
+    const service = new EventSetupAnalysisService(
+      {
+        client: { findUnique: vi.fn().mockResolvedValue({ id: clientId, name: 'Northstar Events' }) },
+        conversation: { findFirst: vi.fn().mockResolvedValue({
+          id: sessionId, draft: {}, setupDocuments: [],
+          messages: [
+            { id: 'welcome-a', role: 'CONCIERGE', content: oldWelcome },
+            { id: 'reply-a', role: 'USER', content: 'Our annual forum' },
+          ],
+        }) },
+      } as unknown as PrismaService,
+      new AuthorizationService(),
+      {} as FileValidationService,
+      {} as DocumentTextExtractorService,
+      {} as AiProvider,
+      {} as EventCompletenessService,
+      {} as FileStorage,
+    );
+
+    const result = await service.start(actor, { clientId });
+    expect(result.resumed).toBe(true);
+    expect(result.messages[0]?.content).toContain('separate date step with a calendar');
+    expect(result.messages[0]?.content).not.toContain('its purpose, dates, location');
+    expect(result.messages[1]?.content).toBe('Our annual forum');
   });
 
   it('resumes the active setup and archives it when a new chat is requested', async () => {
@@ -288,7 +318,7 @@ describe('EventSetupAnalysisService', () => {
       timezone: 'Europe/Lisbon',
     });
     expect(result.message).toBe(
-      'I captured the venue. What are the start and end dates and times, and which timezone should I use? You can write them together in the chat. I still need email addresses before I can add these guests: Sam Lee.',
+      'I captured the venue. Next, choose one date or a date range, the start and end times, and the event timezone in the date step below. I still need email addresses before I can add these guests: Sam Lee.',
     );
     expect(result.guests).toEqual([{ fullName: 'Alex Morgan', email: 'alex@example.test' }]);
     expect(updateConversation).toHaveBeenCalledWith(
@@ -441,7 +471,7 @@ describe('EventSetupAnalysisService', () => {
       expect(result.message).toContain('Would you like to attach more event documents or add any guest details');
       expect(result.message).toContain('If there is nothing else to add, create the event workspace');
     } else {
-      expect(result.message).toContain('What are the start and end dates and times');
+      expect(result.message).toContain('choose one date or a date range');
     }
     expect(transaction.conversation.update.mock.calls[0]?.[0]).toMatchObject({
       data: { draft: { documentReviewPending: false } },
