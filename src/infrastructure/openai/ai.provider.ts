@@ -52,6 +52,7 @@ export abstract class AiProvider {
   abstract extractEventInformation(
     text: string,
     requestId: string,
+    focusFields?: string[],
   ): Promise<EventExtractionCandidate>;
   abstract answer(
     input: GroundedAnswerInput,

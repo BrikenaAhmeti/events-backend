@@ -1,11 +1,11 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { ApplicationError } from '../../../common/errors/application.error';
 import type { AuthenticatedActor } from '../../../common/types/request.types';
 import { PrismaService } from '../../../infrastructure/database/prisma.service';
-import { AiProvider } from '../../../infrastructure/openai/ai.provider';
+import { AiProvider, type EventExtractionCandidate } from '../../../infrastructure/openai/ai.provider';
 import { FileStorage } from '../../../infrastructure/storage/file-storage';
 import { DocumentTextExtractorService } from '../../documents/application/document-text-extractor.service';
 import { FileValidationService } from '../../documents/application/file-validation.service';
@@ -92,6 +92,7 @@ const missingLabels: Record<string, string> = {
 
 @Injectable()
 export class EventSetupAnalysisService {
+  private readonly logger = new Logger(EventSetupAnalysisService.name);
   constructor(
     private readonly prisma: PrismaService,
     private readonly authorization: AuthorizationService,
@@ -358,7 +359,23 @@ export class EventSetupAnalysisService {
       input.text ? `Latest event creator message:\n${input.text}` : '',
       fileText ? `Attached event file content:\n${fileText}` : '',
     ].filter(Boolean).join('\n\n');
-    const extracted = await this.ai.extractEventInformation(source, requestId);
+    let extracted = await this.ai.extractEventInformation(source, requestId);
+    if (fileText) {
+      const focusFields = this.missingDocumentFields(extracted.event);
+      if (focusFields.length) {
+        try {
+          const verification = await this.ai.extractEventInformation(
+            [input.text ? `Latest event creator message:\n${input.text}` : '',
+              `Attached event file content:\n${fileText}`].filter(Boolean).join('\n\n'),
+            requestId,
+            focusFields,
+          );
+          extracted = this.combineDocumentReadings(extracted, verification);
+        } catch {
+          this.logger.warn({ requestId }, 'Focused event document verification failed');
+        }
+      }
+    }
     const extractedEvent = extracted.event ?? {};
     const dateHints = {
       startDate: extractedEvent.startDate ?? previous.dateHints.startDate,
@@ -498,6 +515,42 @@ export class EventSetupAnalysisService {
           nameWasProvided: false, nameSuggestionRejected: false, documentReviewPending: false,
           documentReviewBaseline: null, pendingDocumentNames: [],
         };
+  }
+
+  private missingDocumentFields(event: EventExtractionCandidate['event']): string[] {
+    const fields: string[] = [];
+    const addIfMissing = (key: 'name' | 'category' | 'description' | 'timezone' |
+      'organizerName' | 'organizerEmail') => {
+      if (!event?.[key]) fields.push(key);
+    };
+    for (const key of ['name', 'category', 'description', 'timezone',
+      'organizerName', 'organizerEmail'] as const) addIfMissing(key);
+    if (!event?.destination && !event?.venue) fields.push('destination or venue');
+    if (!event?.startAt && !event?.startDate) fields.push('startDate');
+    if (!event?.endAt && !event?.endDate) fields.push('endDate');
+    if (!event?.startAt && !event?.startTime) fields.push('startTime');
+    if (!event?.endAt && !event?.endTime) fields.push('endTime');
+    return fields;
+  }
+
+  private combineDocumentReadings(
+    first: EventExtractionCandidate,
+    verification: EventExtractionCandidate,
+  ): EventExtractionCandidate {
+    const event = { ...first.event };
+    for (const [key, value] of Object.entries(verification.event ?? {})) {
+      if (value && !event[key as keyof typeof event])
+        Object.assign(event, { [key]: value });
+    }
+    return {
+      reply: first.reply || verification.reply,
+      nameSuggestions: first.nameSuggestions?.length
+        ? first.nameSuggestions : verification.nameSuggestions,
+      event,
+      facts: [...first.facts, ...verification.facts],
+      schedule: [...first.schedule, ...verification.schedule],
+      guests: [...(first.guests ?? []), ...(verification.guests ?? [])],
+    };
   }
 
   private async resolveEventName(

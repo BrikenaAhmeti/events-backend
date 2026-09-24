@@ -453,6 +453,20 @@ describe('EventSetupAnalysisService', () => {
       text: 'Conferencia en Riverside Hall. 12 octubre 2027, 09:00–18:00. Organización: Morgan Reed, morgan@example.test.',
       metadata: { characters: 110 },
     });
+    const extractEventInformation = vi.fn()
+      .mockResolvedValueOnce({
+        reply: 'I found the venue.',
+        event: { venue: 'Riverside Hall' },
+        facts: [], schedule: [],
+      })
+      .mockResolvedValue({
+        reply: 'I found the date, times, and organizer.',
+        event: { startDate: '2027-10-12',
+          endDate: '2027-10-12', startTime: '09:00', endTime: '18:00',
+          timezone: 'Europe/Lisbon', organizerName: 'Morgan Reed',
+          organizerEmail: 'morgan@example.test' },
+        facts: [], schedule: [],
+      });
     const service = new EventSetupAnalysisService(
       {
         client: { findUnique: vi.fn().mockResolvedValue({ name: 'Northstar Events' }) },
@@ -473,17 +487,7 @@ describe('EventSetupAnalysisService', () => {
       new AuthorizationService(),
       { validate: vi.fn().mockReturnValue('txt') },
       { extract } as unknown as DocumentTextExtractorService,
-      {
-        extractEventInformation: vi.fn().mockResolvedValue({
-          reply: 'I found the venue, date, times, and organizer.',
-          event: { venue: 'Riverside Hall', startDate: '2027-10-12',
-            endDate: '2027-10-12', startTime: '09:00', endTime: '18:00',
-            timezone: 'Europe/Lisbon', organizerName: 'Morgan Reed',
-            organizerEmail: 'morgan@example.test' },
-          facts: [],
-          schedule: [],
-        }),
-      } as unknown as AiProvider,
+      { extractEventInformation } as unknown as AiProvider,
       {
         evaluate: vi.fn().mockReturnValue({
           score: 11,
@@ -529,6 +533,11 @@ describe('EventSetupAnalysisService', () => {
       startAt: '2027-10-12T08:00:00.000Z',
       endAt: '2027-10-12T17:00:00.000Z',
     });
+    expect(extractEventInformation).toHaveBeenCalledWith(
+      expect.stringContaining('Organización: Morgan Reed'),
+      'request-file',
+      expect.arrayContaining(['startDate', 'startTime', 'organizerEmail']),
+    );
     expect(transaction.conversation.update.mock.calls[0]?.[0]).toMatchObject({
       data: { draft: { documentReviewPending: true } },
     });

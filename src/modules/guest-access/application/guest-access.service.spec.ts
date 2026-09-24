@@ -134,6 +134,22 @@ describe('GuestAccessService invitation security', () => {
     expect(query.select).not.toHaveProperty('organizerName');
   });
 
+  it('resolves a shared chat URL to the public confirmation page without exposing event details', async () => {
+    const findFirst = vi.fn().mockResolvedValueOnce({ slug: 'leadership-forum' }).mockResolvedValueOnce(null);
+    const service = new GuestAccessService(
+      { event: { findFirst } } as unknown as PrismaService,
+      new TokenService(), new RateLimitService(),
+      {} as ConfigService<Environment, true>, new GuestAccessWindowService(),
+    );
+
+    await expect(service.publicEventLink('event-a')).resolves.toEqual({ slug: 'leadership-forum' });
+    expect(findFirst).toHaveBeenCalledWith({
+      where: { id: 'event-a', status: { in: ['PUBLISHED', 'CANCELLED'] } },
+      select: { slug: true },
+    });
+    await expect(service.publicEventLink('unknown')).rejects.toMatchObject({ code: 'EVENT_NOT_FOUND' });
+  });
+
   it('lets a confirmed guest use the event link and open event details before the start', async () => {
     const event = {
       id: 'event-a', slug: 'leadership-forum', name: 'Leadership Forum', status: 'PUBLISHED',
