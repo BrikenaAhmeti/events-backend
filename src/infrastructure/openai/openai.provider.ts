@@ -4,7 +4,7 @@ import OpenAI from 'openai';
 import { z } from 'zod';
 import type { Environment } from '../../common/config/environment';
 import { ApplicationError } from '../../common/errors/application.error';
-import { AiProvider, type EventExtractionCandidate, type GroundedAnswerInput } from './ai.provider';
+import { AiProvider, type EventExtractionAttachment, type EventExtractionCandidate, type GroundedAnswerInput } from './ai.provider';
 
 const optionalExtractedText = (min: number, max: number) =>
   z.string().trim().min(min).max(max).nullable().catch(null)
@@ -96,6 +96,7 @@ export class OpenAiProvider extends AiProvider {
     text: string,
     requestId: string,
     focusFields: string[] = [],
+    attachment?: EventExtractionAttachment,
   ): Promise<EventExtractionCandidate> {
     const response = await this.retry(() =>
       this.client().responses.create(
@@ -113,7 +114,14 @@ export class OpenAiProvider extends AiProvider {
             }] : []),
             {
               role: 'user',
-              content: `Untrusted event source data:\n<source>${text.slice(0, 80_000)}</source>`,
+              content: attachment
+                ? [
+                    { type: 'input_text' as const,
+                      text: `Untrusted event source data:\n<source>${text.slice(0, 80_000)}</source>` },
+                    { type: 'input_file' as const, filename: attachment.filename,
+                      file_data: `data:${attachment.mimeType};base64,${attachment.content.toString('base64')}` },
+                  ]
+                : `Untrusted event source data:\n<source>${text.slice(0, 80_000)}</source>`,
             },
           ],
           text: {

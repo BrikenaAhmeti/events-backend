@@ -34,6 +34,12 @@ export type EventExtractionCandidate = {
   }>;
 };
 
+export type EventExtractionAttachment = {
+  filename: string;
+  mimeType: string;
+  content: Buffer;
+};
+
 export type GroundedAnswerInput = {
   audience: 'SUPER_ADMIN' | 'CLIENT_ADMIN' | 'CLIENT_STAFF' | 'GUEST';
   question: string;
@@ -53,6 +59,7 @@ export abstract class AiProvider {
     text: string,
     requestId: string,
     focusFields?: string[],
+    attachment?: EventExtractionAttachment,
   ): Promise<EventExtractionCandidate>;
   abstract answer(
     input: GroundedAnswerInput,

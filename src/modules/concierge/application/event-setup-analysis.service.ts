@@ -5,7 +5,7 @@ import { z } from 'zod';
 import { ApplicationError } from '../../../common/errors/application.error';
 import type { AuthenticatedActor } from '../../../common/types/request.types';
 import { PrismaService } from '../../../infrastructure/database/prisma.service';
-import { AiProvider, type EventExtractionCandidate } from '../../../infrastructure/openai/ai.provider';
+import { AiProvider, type EventExtractionAttachment, type EventExtractionCandidate } from '../../../infrastructure/openai/ai.provider';
 import { FileStorage } from '../../../infrastructure/storage/file-storage';
 import { DocumentTextExtractorService } from '../../documents/application/document-text-extractor.service';
 import { FileValidationService } from '../../documents/application/file-validation.service';
@@ -301,7 +301,7 @@ export class EventSetupAnalysisService {
       fileText = extractedFile.text;
     }
     const meaningfulSource = [input.text, fileText].filter(Boolean).join('').trim();
-    if (!meaningfulSource) {
+    if (!meaningfulSource && fileExtension !== 'pdf') {
       throw new ApplicationError(
         400,
         'EVENT_SOURCE_REQUIRED',
@@ -310,12 +310,14 @@ export class EventSetupAnalysisService {
           : 'Describe the event or attach an event file to continue.',
       );
     }
-    if (meaningfulSource.length > 60_000) {
-      throw new ApplicationError(
-        400, 'EVENT_SOURCE_TOO_LONG',
-        'Please split this information into shorter files or messages (up to 60,000 characters each) so I can review every detail.',
-      );
-    }
+    const fileNeedsOriginal = Boolean(file && (fileExtension === 'pdf' && !fileText ||
+      fileText.length > 60_000));
+    const attachment: EventExtractionAttachment | undefined = file && fileNeedsOriginal
+      ? { filename: file.originalname, mimeType: this.analysisMimeType(fileExtension), content: file.buffer }
+      : undefined;
+    const fileTextForPrompt = fileText.length > 60_000
+      ? `${fileText.slice(0, 35_000)}\n[Middle sections are in the attached original file]\n${fileText.slice(-15_000)}`
+      : fileText;
     if (file && extractedFile) {
       savedFile = await this.saveSetupDocument(
         actor,
@@ -357,18 +359,24 @@ export class EventSetupAnalysisService {
     const source = [
       priorContext,
       input.text ? `Latest event creator message:\n${input.text}` : '',
-      fileText ? `Attached event file content:\n${fileText}` : '',
+      fileTextForPrompt ? `Attached event file content:\n${fileTextForPrompt}` :
+        file ? `Attached event file: ${file.originalname}` : '',
     ].filter(Boolean).join('\n\n');
-    let extracted = await this.ai.extractEventInformation(source, requestId);
-    if (fileText) {
+    let extracted = await this.ai.extractEventInformation(source, requestId, [], attachment);
+    if (file) {
       const focusFields = this.missingDocumentFields(extracted.event);
       if (focusFields.length) {
         try {
           const verification = await this.ai.extractEventInformation(
             [input.text ? `Latest event creator message:\n${input.text}` : '',
-              `Attached event file content:\n${fileText}`].filter(Boolean).join('\n\n'),
+              fileTextForPrompt
+                ? `Attached event file content:\n${fileTextForPrompt}`
+                : `Attached event file: ${file.originalname}`].filter(Boolean).join('\n\n'),
             requestId,
             focusFields,
+            fileExtension === 'pdf' || fileNeedsOriginal
+              ? { filename: file.originalname, mimeType: this.analysisMimeType(fileExtension), content: file.buffer }
+              : undefined,
           );
           extracted = this.combineDocumentReadings(extracted, verification);
         } catch {
@@ -531,6 +539,16 @@ export class EventSetupAnalysisService {
     if (!event?.startAt && !event?.startTime) fields.push('startTime');
     if (!event?.endAt && !event?.endTime) fields.push('endTime');
     return fields;
+  }
+
+  private analysisMimeType(extension: string): string {
+    return ({
+      pdf: 'application/pdf',
+      docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      csv: 'text/csv',
+      txt: 'text/plain',
+    } as Record<string, string>)[extension] ?? 'application/octet-stream';
   }
 
   private combineDocumentReadings(

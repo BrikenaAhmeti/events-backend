@@ -405,10 +405,14 @@ describe('EventSetupAnalysisService', () => {
     expect(extractEventInformation).toHaveBeenCalledWith(
       expect.stringContaining('Current event setup draft'),
       'request-a',
+      [],
+      undefined,
     );
     expect(extractEventInformation).toHaveBeenCalledWith(
       expect.stringContaining('Concierge: What venue should I add for this event?'),
       'request-a',
+      [],
+      undefined,
     );
     expect(result.event).toMatchObject({
       name: 'Leadership Forum',
@@ -537,14 +541,21 @@ describe('EventSetupAnalysisService', () => {
       expect.stringContaining('Organización: Morgan Reed'),
       'request-file',
       expect.arrayContaining(['startDate', 'startTime', 'organizerEmail']),
+      undefined,
     );
     expect(transaction.conversation.update.mock.calls[0]?.[0]).toMatchObject({
       data: { draft: { documentReviewPending: true } },
     });
     extract.mockResolvedValueOnce({ text: 'x'.repeat(60_001), metadata: { characters: 60_001 } });
     await expect(service.analyze(actor, { clientId, sessionId }, file, 'request-large'))
-      .rejects.toMatchObject({ code: 'EVENT_SOURCE_TOO_LONG' });
-    expect(storage.upload).toHaveBeenCalledOnce();
+      .resolves.toMatchObject({ documentReviewPending: true });
+    expect(extractEventInformation).toHaveBeenCalledWith(
+      expect.stringContaining('Middle sections are in the attached original file'),
+      'request-large',
+      [],
+      expect.objectContaining({ filename: 'event-plan.txt', mimeType: 'text/plain' }),
+    );
+    expect(storage.upload).toHaveBeenCalledTimes(2);
   });
 
   it.each([false, true])('confirms document details then offers the appropriate next step (complete: %s)', async (complete) => {
