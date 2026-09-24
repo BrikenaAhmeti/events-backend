@@ -156,8 +156,9 @@ export class ConciergeService {
     };
   }
 
-  async startGuestChat(actor: GuestActor, language: string) {
-    if (!languageName(language))
+  async startGuestChat(actor: GuestActor, language: string, requestId: string) {
+    const selectedLanguage = languageName(language);
+    if (!selectedLanguage)
       throw new ApplicationError(400, 'INVALID_CHAT_LANGUAGE', 'Choose a valid chat language.');
     const event = await this.loadEvent(actor.eventId, true);
     const guest = await this.prisma.guest.findFirst({
@@ -165,6 +166,21 @@ export class ConciergeService {
     });
     if (!guest)
       throw new ApplicationError(403, 'GUEST_ACCESS_DENIED', 'Guest access is not valid.');
+    const response = await this.ai.answer({
+      audience: 'GUEST',
+      question: 'Begin this new guest conversation.',
+      eventName: event.name,
+      timezone: event.timezone ?? 'UTC',
+      structuredContext: `Event: ${event.name}`,
+      untrustedDocumentContext: '',
+      recentMessages: [],
+      responseLanguage: selectedLanguage,
+      openingGreeting: true,
+      requestId,
+    });
+    const opening = z.string().trim().min(2).max(500).safeParse(response.answer);
+    if (!opening.success)
+      throw new ApplicationError(502, 'CONCIERGE_UNAVAILABLE', 'Concierge could not start the chat. Please try again.');
     return this.prisma.$transaction(async (tx) => {
       await tx.conversation.updateMany({
         where: { eventId: event.id, type: 'GUEST', state: 'ACTIVE', userId: null, guestId: guest.id },
@@ -174,7 +190,17 @@ export class ConciergeService {
         data: { clientId: event.clientId, eventId: event.id, guestId: guest.id, type: 'GUEST', draft: { language } },
         select: { id: true },
       });
-      return { id: conversation.id, language, messages: [] };
+      const message = await tx.conversationMessage.create({
+        data: {
+          conversationId: conversation.id,
+          role: 'CONCIERGE',
+          content: opening.data,
+          status: 'COMPLETE',
+          metadata: response.usage ?? {},
+        },
+        select: { id: true, role: true, content: true, status: true, createdAt: true },
+      });
+      return { id: conversation.id, language, messages: [message] };
     });
   }
 

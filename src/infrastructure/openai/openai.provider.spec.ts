@@ -25,6 +25,28 @@ describe('Concierge audience instructions', () => {
 });
 
 describe('OpenAiProvider streaming', () => {
+  it('asks the model to open a new guest chat in the selected language', async () => {
+    openAi.create.mockResolvedValueOnce({ output_text: 'Si mund t’ju ndihmoj me eventin?' });
+    const config = {
+      get: (key: string) => ({ OPENAI_API_KEY: 'test-key', OPENAI_MODEL: 'test-model', PRODUCT_NAME: 'Feliam' })[key],
+    } as unknown as ConfigService<Environment, true>;
+    const provider = new OpenAiProvider(config);
+
+    const result = await provider.answer({
+      audience: 'GUEST', question: 'Begin this new guest conversation.',
+      eventName: 'Forum', timezone: 'Europe/Belgrade', structuredContext: 'Event: Forum',
+      untrustedDocumentContext: '', recentMessages: [], responseLanguage: 'Albanian',
+      openingGreeting: true, requestId: 'request-opening',
+    });
+
+    expect(result.answer).toBe('Si mund t’ju ndihmoj me eventin?');
+    const request = openAi.create.mock.calls.at(-1)?.[0] as unknown as {
+      input: Array<{ role: string; content: string }>;
+    };
+    expect(request.input[1]?.content).toContain('Reply in Albanian');
+    expect(request.input[1]?.content).toContain('first message in a new guest chat');
+  });
+
   it('forwards response deltas immediately and returns usage', async () => {
     async function* events() {
       await Promise.resolve();

@@ -122,7 +122,7 @@ export class ConciergeController {
     if (!actor || actor.eventId !== eventId)
       throw new ApplicationError(403, 'GUEST_ACCESS_DENIED', 'Guest access is not valid.');
     this.rateLimits.assert(`concierge:guest-new-chat:${actor.sessionId}:${eventId}`, 15, 60_000);
-    return this.concierge.startGuestChat(actor, languageSchema.parse(body).language);
+    return this.concierge.startGuestChat(actor, languageSchema.parse(body).language, request.requestId);
   }
 
   @Public()

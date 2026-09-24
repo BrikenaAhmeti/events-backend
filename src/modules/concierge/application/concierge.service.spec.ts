@@ -8,20 +8,27 @@ import { ConciergeService, type ConciergeStreamEvent } from './concierge.service
 import { requestedLanguage } from './guest-chat-language';
 
 describe('ConciergeService streaming', () => {
-  it('archives a guest’s old chat and starts a saved empty chat in the chosen language', async () => {
+  it('starts a guest chat with an AI opening in the chosen language and saves it before showing the chat', async () => {
     const actor: GuestActor = { eventId: 'event-a', guestId: 'guest-a', sessionId: 'session-a' };
+    const opening = { id: 'opening-a', role: 'CONCIERGE', content: 'Si mund t’ju ndihmoj me këtë event?', status: 'COMPLETE', createdAt: new Date() };
     const updateMany = vi.fn().mockResolvedValue({ count: 1 });
     const create = vi.fn().mockResolvedValue({ id: 'new-chat' });
+    const createMessage = vi.fn().mockResolvedValue(opening);
+    const answer = vi.fn().mockResolvedValue({ answer: opening.content });
     const prisma = {
-      event: { findUnique: vi.fn().mockResolvedValue({ id: actor.eventId, clientId: 'client-a' }) },
+      event: { findUnique: vi.fn().mockResolvedValue({ id: actor.eventId, clientId: 'client-a', name: 'Forum', timezone: 'Europe/Belgrade' }) },
       guest: { findFirst: vi.fn().mockResolvedValue({ id: actor.guestId }) },
       $transaction: vi.fn(async (operation: (tx: unknown) => Promise<unknown>) =>
-        operation({ conversation: { updateMany, create } })),
+        operation({ conversation: { updateMany, create }, conversationMessage: { create: createMessage } })),
     } as unknown as PrismaService;
-    const service = new ConciergeService(prisma, {} as AiProvider, {} as EventKnowledgeRepository,
+    const service = new ConciergeService(prisma, { answer } as unknown as AiProvider, {} as EventKnowledgeRepository,
       new AuthorizationService(), {} as FieldEncryptionService);
 
-    expect(await service.startGuestChat(actor, 'sq')).toEqual({ id: 'new-chat', language: 'sq', messages: [] });
+    expect(await service.startGuestChat(actor, 'sq', 'request-a')).toEqual({ id: 'new-chat', language: 'sq', messages: [opening] });
+    expect(answer).toHaveBeenCalledWith(expect.objectContaining({
+      audience: 'GUEST', responseLanguage: 'Albanian', openingGreeting: true,
+      eventName: 'Forum', requestId: 'request-a', recentMessages: [],
+    }));
     expect(updateMany.mock.calls[0]?.[0]).toMatchObject({
       where: { eventId: actor.eventId, type: 'GUEST', state: 'ACTIVE', userId: null, guestId: actor.guestId },
       data: { state: 'COMPLETED' },
@@ -29,6 +36,24 @@ describe('ConciergeService streaming', () => {
     expect(create.mock.calls[0]?.[0]).toMatchObject({
       data: { guestId: actor.guestId, draft: { language: 'sq' } },
     });
+    expect(createMessage.mock.calls[0]?.[0]).toMatchObject({
+      data: { conversationId: 'new-chat', role: 'CONCIERGE', content: opening.content, status: 'COMPLETE' },
+    });
+  });
+
+  it('keeps the previous chat active if the AI cannot create an opening', async () => {
+    const actor: GuestActor = { eventId: 'event-a', guestId: 'guest-a', sessionId: 'session-a' };
+    const transaction = vi.fn();
+    const service = new ConciergeService({
+      event: { findUnique: vi.fn().mockResolvedValue({ id: actor.eventId, clientId: 'client-a', name: 'Forum' }) },
+      guest: { findFirst: vi.fn().mockResolvedValue({ id: actor.guestId }) },
+      $transaction: transaction,
+    } as unknown as PrismaService,
+    { answer: vi.fn().mockRejectedValue(new Error('Unavailable')) } as unknown as AiProvider,
+    {} as EventKnowledgeRepository, new AuthorizationService(), {} as FieldEncryptionService);
+
+    await expect(service.startGuestChat(actor, 'fr', 'request-a')).rejects.toThrow('Unavailable');
+    expect(transaction).not.toHaveBeenCalled();
   });
 
   it('recognizes explicit language changes without mistaking an event question for one', () => {
