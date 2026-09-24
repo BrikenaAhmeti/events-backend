@@ -396,9 +396,14 @@ describe('EventSetupAnalysisService', () => {
     expect(storage.upload).toHaveBeenCalledOnce();
   });
 
-  it('requires explicit confirmation of document details before asking for remaining details', async () => {
+  it.each([false, true])('confirms document details then offers the appropriate next step (complete: %s)', async (complete) => {
     const draft = {
-      event: { name: 'Leadership Forum', venue: 'Riverside Hall' },
+      event: {
+        name: 'Leadership Forum', category: 'CONFERENCE', description: 'A leadership forum.',
+        venue: 'Riverside Hall', startAt: complete ? '2027-10-12T08:00:00.000Z' : undefined,
+        endAt: '2027-10-12T18:00:00.000Z', timezone: 'Europe/Lisbon',
+        organizerName: 'Morgan Reed', organizerEmail: 'morgan@example.test',
+      },
       facts: [], schedule: [], guests: [], suggestedName: 'Leadership Forum',
       nameWasProvided: true, documentReviewPending: true,
       documentReviewBaseline: { event: {}, facts: [], schedule: [], guests: [] },
@@ -420,7 +425,7 @@ describe('EventSetupAnalysisService', () => {
       {} as FileValidationService,
       {} as DocumentTextExtractorService,
       { extractEventInformation } as unknown as AiProvider,
-      { evaluate: vi.fn().mockReturnValue({ score: 25, ready: false, missing: ['startAt'] }) } as unknown as EventCompletenessService,
+      new EventCompletenessService(),
       {} as FileStorage,
     );
 
@@ -431,7 +436,13 @@ describe('EventSetupAnalysisService', () => {
     expect(extractEventInformation).not.toHaveBeenCalled();
     expect(result.documentReviewPending).toBe(false);
     expect(result.event).toMatchObject({ name: 'Leadership Forum', venue: 'Riverside Hall' });
-    expect(result.message).toContain('What are the start and end dates and times');
+    expect(result.completeness.ready).toBe(complete);
+    if (complete) {
+      expect(result.message).toContain('Would you like to attach more event documents or add any guest details');
+      expect(result.message).toContain('If there is nothing else to add, create the event workspace');
+    } else {
+      expect(result.message).toContain('What are the start and end dates and times');
+    }
     expect(transaction.conversation.update.mock.calls[0]?.[0]).toMatchObject({
       data: { draft: { documentReviewPending: false } },
     });

@@ -616,7 +616,7 @@ export class EventSetupAnalysisService {
       .join(' ')
       .trim();
     if (completeness.ready) {
-      return `${acknowledgement || 'I captured the event details.'} Everything required is ready. You can add venue guidance such as entrances, floors, rooms, restrooms, accessibility, parking, and Wi-Fi, or attach more event documents. Otherwise, continue to guest details and publishing.`;
+      return `${acknowledgement || 'I captured the event details.'} Everything required is ready. Would you like to attach more event documents or add any guest details, such as names, emails, seating, dietary or accessibility needs, travel, or accommodation? You can also add venue directions, rooms, restrooms, parking, and Wi-Fi. If there is nothing else to add, create the event workspace to continue.`;
     }
     const missing = new Set(completeness.missing);
     let question: string;
