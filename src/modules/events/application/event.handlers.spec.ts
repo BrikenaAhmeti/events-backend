@@ -138,7 +138,11 @@ describe('CreateEventDraftHandler', () => {
       encryption,
     );
 
-    await handler.execute(new CreateEventDraftCommand(actor, 'request-guests', {
+    const staffCreator: AuthenticatedActor = {
+      ...actor,
+      memberships: [{ ...actor.memberships[0], role: 'CLIENT_STAFF', permissions: [Permission.EVENT_CREATE] }],
+    };
+    await handler.execute(new CreateEventDraftCommand(staffCreator, 'request-guests', {
       ...readyInput,
       setupSessionId: '9f47fbca-c63c-4ea0-af61-c74390c238b8',
     }));

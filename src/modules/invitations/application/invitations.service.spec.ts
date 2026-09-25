@@ -5,6 +5,7 @@ import type { PrismaService } from '../../../infrastructure/database/prisma.serv
 import type { OutboxService } from '../../../infrastructure/jobs/outbox.service';
 import { GuestAccessWindowService } from '../../guest-access/application/guest-access-window.service';
 import { AuthorizationService } from '../../memberships/application/authorization.service';
+import { Permission } from '../../memberships/domain/permission';
 import { InvitationsService } from './invitations.service';
 import type { QrCodeService } from './qr-code.service';
 import { EventMutationPolicyService } from '../../events/domain/event-mutation-policy.service';
@@ -19,6 +20,8 @@ describe('InvitationsService', () => {
       clientId: 'client-a',
       slug: 'leadership-forum',
       status: 'PUBLISHED',
+      createdByUserId: 'admin-a',
+      startAt: new Date('2027-10-12T08:00:00Z'),
       endAt: new Date('2027-10-14T18:00:00Z'),
     };
     const transaction = {
@@ -56,9 +59,9 @@ describe('InvitationsService', () => {
       memberships: [
         {
           clientId: 'client-a',
-          role: 'CLIENT_ADMIN',
+          role: 'CLIENT_STAFF',
           status: 'ACTIVE',
-          permissions: [],
+          permissions: [Permission.EVENT_CREATE],
         },
       ],
     };

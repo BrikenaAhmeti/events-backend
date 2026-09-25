@@ -175,8 +175,8 @@ export class InvitationsService {
       select: { id: true, clientId: true, slug: true, status: true, startAt: true, endAt: true, createdByUserId: true },
     });
     if (!event) throw new ApplicationError(404, 'EVENT_NOT_FOUND', 'Event not found.');
-    this.authorization.assert(actor, event.clientId, permission);
-    if (permission !== Permission.INVITATION_READ) this.policy.assertMutable(actor, event, permission);
+    if (permission === Permission.INVITATION_READ) this.authorization.assert(actor, event.clientId, permission);
+    else this.policy.assertMutable(actor, event, permission);
     return event;
   }
 }

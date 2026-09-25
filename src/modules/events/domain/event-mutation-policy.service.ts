@@ -3,7 +3,7 @@ import type { EventStatus } from '@prisma/client';
 import { ApplicationError } from '../../../common/errors/application.error';
 import type { AuthenticatedActor } from '../../../common/types/request.types';
 import { AuthorizationService } from '../../memberships/application/authorization.service';
-import type { Permission } from '../../memberships/domain/permission';
+import { Permission } from '../../memberships/domain/permission';
 import { EventLifecycleService } from './event-lifecycle.service';
 
 type ManagedEvent = {
@@ -22,7 +22,7 @@ export class EventMutationPolicyService {
   ) {}
 
   canMutate(actor: AuthenticatedActor, event: ManagedEvent, permission: Permission): boolean {
-    if (!this.authorization.can(actor, event.clientId, permission)) return false;
+    if (!this.hasPermission(actor, event, permission)) return false;
     if (!this.lifecycle.isMutable(event)) return false;
     if (actor.platformRole === 'SUPER_ADMIN') return true;
     const membership = actor.memberships.find(
@@ -32,7 +32,8 @@ export class EventMutationPolicyService {
   }
 
   assertMutable(actor: AuthenticatedActor, event: ManagedEvent, permission: Permission): void {
-    this.authorization.assert(actor, event.clientId, permission);
+    if (!this.hasPermission(actor, event, permission))
+      this.authorization.assert(actor, event.clientId, permission);
     if (this.canMutate(actor, event, permission)) return;
     if (!this.lifecycle.isMutable(event)) {
       throw new ApplicationError(
@@ -46,5 +47,19 @@ export class EventMutationPolicyService {
       'EVENT_OWNERSHIP_REQUIRED',
       'Staff can change only events they created.',
     );
+  }
+
+  private hasPermission(actor: AuthenticatedActor, event: ManagedEvent, permission: Permission): boolean {
+    if (this.authorization.can(actor, event.clientId, permission)) return true;
+    const creatorEventPermissions: Permission[] = [
+      Permission.EVENT_EDIT,
+      Permission.EVENT_PUBLISH,
+      Permission.GUEST_MANAGE,
+      Permission.GUEST_IMPORT,
+      Permission.INVITATION_SEND,
+    ];
+    return creatorEventPermissions.includes(permission) &&
+      event.createdByUserId === actor.userId &&
+      this.authorization.can(actor, event.clientId, Permission.EVENT_CREATE);
   }
 }

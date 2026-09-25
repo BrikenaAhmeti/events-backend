@@ -6,6 +6,7 @@ import type { DocumentTextExtractorService } from '../../documents/application/d
 import type { FileValidationService } from '../../documents/application/file-validation.service';
 import { EventCompletenessService } from '../../events/domain/event-completeness.service';
 import { AuthorizationService } from '../../memberships/application/authorization.service';
+import { Permission } from '../../memberships/domain/permission';
 import { EventSetupAnalysisService } from './event-setup-analysis.service';
 
 const clientId = '7f24fbca-c63c-4ea0-af61-c74390c238b9';
@@ -388,8 +389,13 @@ describe('EventSetupAnalysisService', () => {
       {} as FileStorage,
     );
 
+    const staffCreator: AuthenticatedActor = {
+      ...actor,
+      platformRole: null,
+      memberships: [{ clientId, role: 'CLIENT_STAFF', status: 'ACTIVE', permissions: [Permission.EVENT_CREATE] }],
+    };
     const result = await service.analyze(
-      actor,
+      staffCreator,
       {
         clientId,
         sessionId,

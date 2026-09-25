@@ -69,6 +69,27 @@ describe('EventMutationPolicyService', () => {
     expect(service.canMutate(staff, upcoming, Permission.EVENT_EDIT)).toBe(true);
   });
 
+  it('lets event creators with only create permission publish, manage guests, and send invitations', () => {
+    const creator: AuthenticatedActor = {
+      ...staff,
+      memberships: [{ ...staff.memberships[0], permissions: [Permission.EVENT_CREATE] }],
+    };
+    for (const permission of [
+      Permission.EVENT_EDIT,
+      Permission.EVENT_PUBLISH,
+      Permission.GUEST_MANAGE,
+      Permission.GUEST_IMPORT,
+      Permission.INVITATION_SEND,
+    ]) {
+      expect(service.canMutate(creator, upcoming, permission)).toBe(true);
+      expect(() => service.assertMutable(creator, upcoming, permission)).not.toThrow();
+      expect(service.canMutate(creator, { ...upcoming, createdByUserId: 'staff-b' }, permission)).toBe(false);
+      expect(() => service.assertMutable(creator, { ...upcoming, createdByUserId: 'staff-b' }, permission))
+        .toThrow('You do not have permission to perform this action.');
+    }
+    expect(service.canMutate(creator, upcoming, Permission.INVITATION_REVOKE)).toBe(false);
+  });
+
   it('denies staff changes to another creator event', () => {
     const anotherCreatorEvent = { ...upcoming, createdByUserId: 'staff-b' };
     for (const permission of [

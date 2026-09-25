@@ -12,7 +12,7 @@ export class AuthorizationService {
     );
     if (!membership) return false;
     if (membership.role === 'CLIENT_ADMIN') return true;
-    if (permission === 'EVENT_READ') return true;
+    if (permission === 'EVENT_READ' || permission === 'GUEST_READ' || permission === 'INVITATION_READ') return true;
     return membership.permissions.includes(permission);
   }
 

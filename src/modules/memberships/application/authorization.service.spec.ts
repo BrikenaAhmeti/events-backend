@@ -54,7 +54,10 @@ describe('AuthorizationService', () => {
       ],
     });
     expect(service.can(staff, 'client-a', Permission.EVENT_READ)).toBe(true);
+    expect(service.can(staff, 'client-a', Permission.GUEST_READ)).toBe(true);
+    expect(service.can(staff, 'client-a', Permission.INVITATION_READ)).toBe(true);
     expect(service.can(staff, 'client-a', Permission.GUEST_MANAGE)).toBe(false);
     expect(service.can(disabled, 'client-a', Permission.EVENT_READ)).toBe(false);
+    expect(service.can(disabled, 'client-a', Permission.GUEST_READ)).toBe(false);
   });
 });

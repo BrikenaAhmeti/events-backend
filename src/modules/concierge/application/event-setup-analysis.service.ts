@@ -430,7 +430,8 @@ export class EventSetupAnalysisService {
     const facts = this.mergeFacts(previous.facts, extractedFacts);
     const schedule = this.mergeSchedule(previous.schedule, extractedSchedule);
     const parsedGuests = validChatGuests(extracted.guests ?? []);
-    const mayManageGuests = this.authorization.can(actor, input.clientId, Permission.GUEST_MANAGE);
+    const mayManageGuests = this.authorization.can(actor, input.clientId, Permission.GUEST_MANAGE) ||
+      this.authorization.can(actor, input.clientId, Permission.EVENT_CREATE);
     const guests = mayManageGuests
       ? validChatGuests([...previous.guests, ...parsedGuests.guests]).guests
       : [];

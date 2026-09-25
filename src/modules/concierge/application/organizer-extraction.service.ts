@@ -11,7 +11,6 @@ import { UpdateEventDetailsCommand } from '../../events/application/event.messag
 import { EventCompletenessService } from '../../events/domain/event-completeness.service';
 import { EventMutationPolicyService } from '../../events/domain/event-mutation-policy.service';
 import { Permission } from '../../memberships/domain/permission';
-import { AuthorizationService } from '../../memberships/application/authorization.service';
 import { validChatGuests } from '../../guests/application/guest.contracts';
 
 @Injectable()
@@ -22,7 +21,6 @@ export class OrganizerExtractionService {
     private readonly prisma: PrismaService,
     private readonly policy: EventMutationPolicyService,
     private readonly completeness: EventCompletenessService,
-    private readonly authorization: AuthorizationService,
     private readonly encryption: FieldEncryptionService,
   ) {}
 
@@ -107,7 +105,7 @@ export class OrganizerExtractionService {
       });
       const parsedGuests = validChatGuests(candidate.guests ?? []);
       if (parsedGuests.guests.length)
-        this.authorization.assert(actor, existing.clientId, Permission.GUEST_MANAGE);
+        this.policy.assertMutable(actor, existing, Permission.GUEST_MANAGE);
       const addedGuests = await this.prisma.$transaction(async (transaction) => {
         for (const fact of candidate.facts) {
           await transaction.eventFact.upsert({

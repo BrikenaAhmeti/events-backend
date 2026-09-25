@@ -5,7 +5,6 @@ import type { PrismaService } from '../../../infrastructure/database/prisma.serv
 import type { AiProvider } from '../../../infrastructure/openai/ai.provider';
 import type { EventCompletenessService } from '../../events/domain/event-completeness.service';
 import type { EventMutationPolicyService } from '../../events/domain/event-mutation-policy.service';
-import { AuthorizationService } from '../../memberships/application/authorization.service';
 import { OrganizerExtractionService } from './organizer-extraction.service';
 
 describe('OrganizerExtractionService guest chat', () => {
@@ -57,7 +56,6 @@ describe('OrganizerExtractionService guest chat', () => {
       prisma,
       { assertMutable: vi.fn() } as unknown as EventMutationPolicyService,
       { evaluate: vi.fn().mockReturnValue({ ready: true, missing: [] }) } as unknown as EventCompletenessService,
-      new AuthorizationService(),
       { encrypt: (value?: string) => value ? `encrypted:${value}` : null } as FieldEncryptionService,
     );
 

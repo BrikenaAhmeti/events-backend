@@ -112,7 +112,7 @@ export class CreateEventDraftHandler implements ICommandHandler<CreateEventDraft
       const candidates = stored && typeof stored === 'object' && !Array.isArray(stored) &&
         'guests' in stored && Array.isArray(stored.guests) ? stored.guests : [];
       setupGuests = validChatGuests(candidates).guests;
-      if (setupGuests.length) this.authorization.assert(actor, input.clientId, Permission.GUEST_MANAGE);
+      // Creating an event also permits adding its initial guest list.
     }
     const event = await this.prisma.$transaction(async (transaction) => {
       if (projected.startAt && projected.startAt.getTime() <= Date.now())
