@@ -174,7 +174,7 @@ export class GuestsService {
       select: { id: true, clientId: true, createdByUserId: true, status: true, startAt: true, endAt: true },
     });
     if (!event) throw new ApplicationError(404, 'EVENT_NOT_FOUND', 'Event not found.');
-    if (permission === Permission.GUEST_READ) this.authorization.assert(actor, event.clientId, permission);
+    if (permission === Permission.GUEST_READ) this.authorization.assert(actor, event.clientId, Permission.EVENT_READ);
     else this.policy.assertMutable(actor, event, permission);
     return event;
   }

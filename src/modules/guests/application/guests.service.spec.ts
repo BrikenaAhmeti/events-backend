@@ -25,6 +25,25 @@ const actor: AuthenticatedActor = {
 };
 
 describe('GuestsService', () => {
+  it('allows active event readers to list guests without a separate guest-read grant', async () => {
+    const reader: AuthenticatedActor = {
+      ...actor,
+      memberships: [{ ...actor.memberships[0], permissions: [Permission.EVENT_READ] }],
+    };
+    const event = { id: 'event-a', clientId: 'client-a', createdByUserId: 'staff-b', status: 'PUBLISHED', startAt: new Date(Date.now() - 86_400_000), endAt: new Date(Date.now() + 86_400_000) };
+    const authorization = new AuthorizationService();
+    const assert = vi.spyOn(authorization, 'assert');
+    const prisma = {
+      event: { findUnique: vi.fn().mockResolvedValue(event) },
+      guest: { findMany: vi.fn().mockResolvedValue([]) },
+    } as unknown as PrismaService;
+    const service = new GuestsService(prisma, authorization, {} as FieldEncryptionService,
+      new EventMutationPolicyService(authorization, new EventLifecycleService()));
+
+    await expect(service.list(reader, event.id)).resolves.toMatchObject({ items: [] });
+    expect(assert).toHaveBeenCalledWith(reader, event.clientId, Permission.EVENT_READ);
+  });
+
   it.each([
     { createdByUserId: 'staff-b', startAt: new Date(Date.now() + 86_400_000), code: 'EVENT_OWNERSHIP_REQUIRED' },
     { createdByUserId: actor.userId, startAt: new Date(Date.now() - 1), code: 'EVENT_CHANGES_CLOSED' },

@@ -13,6 +13,28 @@ import { EventLifecycleService } from '../../events/domain/event-lifecycle.servi
 import type { Prisma } from '@prisma/client';
 
 describe('InvitationsService', () => {
+  it('allows event readers to list invitations without a separate invitation-read grant', async () => {
+    const event = { id: 'event-a', clientId: 'client-a', slug: 'forum', status: 'PUBLISHED',
+      createdByUserId: 'staff-b', startAt: new Date(Date.now() - 86_400_000), endAt: new Date(Date.now() + 86_400_000) };
+    const actor: AuthenticatedActor = {
+      userId: 'staff-a', supabaseUserId: 'identity-a', email: 'staff@example.test',
+      firstName: 'Staff', lastName: 'Member', platformRole: null,
+      memberships: [{ clientId: 'client-a', role: 'CLIENT_STAFF', status: 'ACTIVE', permissions: [Permission.EVENT_READ] }],
+    };
+    const authorization = new AuthorizationService();
+    const assert = vi.spyOn(authorization, 'assert');
+    const prisma = {
+      event: { findUnique: vi.fn().mockResolvedValue(event) },
+      invitation: { findMany: vi.fn().mockResolvedValue([]) },
+    } as unknown as PrismaService;
+    const service = new InvitationsService(prisma, authorization, {} as OutboxService,
+      {} as QrCodeService, {} as ConfigService<Environment, true>, new GuestAccessWindowService(),
+      new EventMutationPolicyService(authorization, new EventLifecycleService()));
+
+    await expect(service.list(actor, event.id)).resolves.toMatchObject({ items: [] });
+    expect(assert).toHaveBeenCalledWith(actor, event.clientId, Permission.EVENT_READ);
+  });
+
   it('queues one secure invitation job for every unsent guest', async () => {
     const guests = Array.from({ length: 2_501 }, (_, index) => ({ id: `guest-${index}` }));
     const event = {
